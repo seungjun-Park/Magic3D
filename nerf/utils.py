@@ -524,6 +524,8 @@ class Trainer(object):
         for epoch in range(self.epoch + 1, max_epochs + 1):
             self.epoch = epoch
 
+            print(f'current epoch: {epoch}')
+
             self.train_one_epoch(train_loader)
 
             if self.workspace is not None and self.local_rank == 0:
