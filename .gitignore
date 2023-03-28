@@ -131,3 +131,6 @@ dmypy.json
 *.pth
 *.txt
 slurm/
+trial/
+*.xml
+*.iml
