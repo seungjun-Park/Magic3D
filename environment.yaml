@@ -12,6 +12,7 @@ dependencies:
   - torchaudio=0.13.1
   - numpy
   - pip:
+      - selenium
       - pytorch-lightning==1.8.6
       - torch-ema
       - ninja
