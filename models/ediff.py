@@ -1,3 +1,5 @@
+import copy
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -10,6 +12,7 @@ from transformers import CLIPModel, CLIPTokenizer, CLIPImageProcessor, T5Tokeniz
 from utils import mean_flat, instantiate_from_config, exists, partial, count_params
 from modules.losses import normal_kl, discretized_gaussian_log_likelihood, ModelMeanType, ModelVarType, LossType
 from modules import make_beta_schedule
+from modules.shedule_sampler import UniformSampler
 
 def _extract_into_tensor(arr, timesteps, broadcast_shape):
     """
@@ -29,6 +32,7 @@ def _extract_into_tensor(arr, timesteps, broadcast_shape):
 class EDiff(pl.LightningModule):
     def __init__(self,
                  unet_config,
+                 schdule_sampler_config,
                  timesteps=1000,
                  beta_schedule="linear",
                  learn_sigma=False,
@@ -49,6 +53,11 @@ class EDiff(pl.LightningModule):
                  use_positional_encodings=False,
                  base_learning_rate=2e-6,
                  tensor_type=torch.float32,
+                 ema_rate=1.0,
+                 use_fp16=False,
+                 fp16_scale_growth=1e-3,
+                 wight_decay=0.0,
+                 lr_anneal_steps=0,
                  ):
         super().__init__()
         self.clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
@@ -61,7 +70,21 @@ class EDiff(pl.LightningModule):
         assert tensor_type in [torch.float32, torch.float64]
         self.parameterization = parameterization
         print(f"{self.__class__.__name__}: Running in {self.parameterization}-prediction mode")
-        self.learning_rate = base_learning_rate
+        self.lr = base_learning_rate
+        self.ema_rate = (
+            [ema_rate]
+            if isinstance(ema_rate, float) else
+            [float(x) for x in ema_rate.split(',')]
+        )
+
+        self.ema_params = [copy.deepcopy(self.model.parameters()) for _ in range(len(self.ema_rate))]
+
+        self.use_fp16 = use_fp16
+        self.fp16_scale_growth = fp16_scale_growth
+        self.schedule_sampler = instantiate_from_config(schdule_sampler_config)
+        self.weight_decay = wight_decay
+        self.lr_anneal_steps = lr_anneal_steps
+
         self.log_every_t = log_every_t
 
         self.cond_stage_model = None
@@ -127,6 +150,10 @@ class EDiff(pl.LightningModule):
                 * np.sqrt(alphas)
                 / (1.0 - self.alphas_cumprod)
         )
+
+    def _update_ema(self):
+        for rate, params in zip(self.ema_rate, self.ema_params):
+            update_ema(params, self.model.parmeters(), rate=rate)
 
     def q_mean_variance(self, x_start, t):
         """
@@ -860,12 +887,14 @@ class EDiff(pl.LightningModule):
 
         return
 
+    def on_train_batch_end(self, outputs, batch, batch_idx, **kwargs):
+        self._update_ema()
+
     def validation_step(self, batch, batch_idx):
         return
 
     def configure_optimizers(self):
-        lr = self.learning_rate
         params = list(self.model.parameters())
-        opt = torch.optim.AdamW(params, lr=lr)
+        opt = torch.optim.AdamW(params, lr=self.lr, weight_decay=self.weight_decay)
         return opt
 
