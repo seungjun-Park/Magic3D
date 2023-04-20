@@ -11,7 +11,8 @@ import math
 from transformers import CLIPModel, CLIPTokenizer, CLIPImageProcessor, T5Tokenizer
 from utils import mean_flat, instantiate_from_config, exists, partial, count_params
 from modules.losses import normal_kl, discretized_gaussian_log_likelihood, ModelMeanType, ModelVarType, LossType
-from modules import make_beta_schedule
+from modules.util import make_beta_schedule, update_ema
+from modules.fp16_util import model_grads_to_master_grads, check_overflow, get_param_groups_and_shapes
 from modules.shedule_sampler import UniformSampler
 
 def _extract_into_tensor(arr, timesteps, broadcast_shape):
@@ -58,6 +59,7 @@ class EDiff(pl.LightningModule):
                  fp16_scale_growth=1e-3,
                  wight_decay=0.0,
                  lr_anneal_steps=0,
+                 initial_lg_loss_scale=20.0
                  ):
         super().__init__()
         self.clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
@@ -70,6 +72,9 @@ class EDiff(pl.LightningModule):
         assert tensor_type in [torch.float32, torch.float64]
         self.parameterization = parameterization
         print(f"{self.__class__.__name__}: Running in {self.parameterization}-prediction mode")
+        self.model = instantiate_from_config(unet_config)
+        count_params(self.model, verbose=True)
+
         self.lr = base_learning_rate
         self.ema_rate = (
             [ema_rate]
@@ -87,13 +92,8 @@ class EDiff(pl.LightningModule):
 
         self.log_every_t = log_every_t
 
-        self.cond_stage_model = None
-
         self.image_size = image_size  # try conv?
         self.channels = channels
-
-        self.model = instantiate_from_config(unet_config)
-        count_params(self.model, verbose=True)
 
         if monitor is not None:
             self.monitor = monitor
@@ -728,7 +728,7 @@ class EDiff(pl.LightningModule):
         output = torch.where((t == 0), decoder_nll, kl)
         return {"output": output, "pred_xstart": out["pred_xstart"]}
 
-    def training_losses(self, model, x_start, t, model_kwargs=None, noise=None):
+    def training_losses(self, x_start, t, model_kwargs=None, noise=None):
         """
         Compute training losses for a single timestep.
 
@@ -751,7 +751,6 @@ class EDiff(pl.LightningModule):
 
         if self.loss_type == LossType.KL or self.loss_type == LossType.RESCALED_KL:
             terms["loss"] = self._vb_terms_bpd(
-                model=model,
                 x_start=x_start,
                 x_t=x_t,
                 t=t,
@@ -761,7 +760,7 @@ class EDiff(pl.LightningModule):
             if self.loss_type == LossType.RESCALED_KL:
                 terms["loss"] *= self.num_timesteps
         elif self.loss_type == LossType.MSE or self.loss_type == LossType.RESCALED_MSE:
-            model_output = model(x_t, self._scale_timesteps(t), **model_kwargs)
+            model_output = self.model(x_t, self._scale_timesteps(t), **model_kwargs)
 
             if self.model_var_type in [
                 ModelVarType.LEARNED,
@@ -879,17 +878,33 @@ class EDiff(pl.LightningModule):
         }
 
     def forward(self, image, text):
-        return
+        t, weights = self.schedule_sampler.sample(image.shape[0], self.device)
+
 
     def training_step(self, batch, batch_idx):
         image, text = batch
-        output = self(image, text)
+        loss, loss_dict = self(image, text)
 
         return
 
-    def on_train_batch_end(self, outputs, batch, batch_idx, **kwargs):
+    def _optimize_fp16(self, opt):
+
+        return
+
+    def _optimize_normal(self, opt):
+        return
+
+    def on_before_optimizer_step(self, optimizer, optimizer_idx):
         self._update_ema()
 
+        if self.use_fp16:
+            return self._optimize_fp16(optimizer)
+        else:
+            return self._optimize_normal(optimizer)
+
+    def on_train_batch_end(self, outputs, batch, batch_idx):
+        self._update_ema()
+       
     def validation_step(self, batch, batch_idx):
         return
 
