@@ -12,6 +12,7 @@ class FreqEncoder_torch(nn.Module):
         self.input_dim = input_dim
         self.include_input = include_input
         self.periodic_fns = periodic_fns
+        self.N_freqs = N_freqs
 
         self.output_dim = 0
         if self.include_input:
@@ -26,17 +27,26 @@ class FreqEncoder_torch(nn.Module):
 
         self.freq_bands = self.freq_bands.numpy().tolist()
 
-    def forward(self, input, **kwargs):
+    def forward(self, input, max_level=None, **kwargs):
+
+        if max_level is None:
+            max_level = self.N_freqs
+        else:
+            max_level = int(max_level * self.N_freqs)
 
         out = []
         if self.include_input:
             out.append(input)
 
-        for i in range(len(self.freq_bands)):
+        for i in range(max_level):
             freq = self.freq_bands[i]
             for p_fn in self.periodic_fns:
                 out.append(p_fn(input * freq))
 
+        # append 0
+        if self.N_freqs - max_level > 0:
+            out.append(torch.zeros(input.shape[0], (self.N_freqs - max_level) * 2 * input.shape[1], device=input.device, dtype=input.dtype))
+        
         out = torch.cat(out, dim=-1)
 
         return out
@@ -68,6 +78,10 @@ def get_encoder(encoding, input_dim=3,
     elif encoding == 'tiledgrid':
         from gridencoder import GridEncoder
         encoder = GridEncoder(input_dim=input_dim, num_levels=num_levels, level_dim=level_dim, base_resolution=base_resolution, log2_hashmap_size=log2_hashmap_size, desired_resolution=desired_resolution, gridtype='tiled', align_corners=align_corners, interpolation=interpolation)
+    
+    elif encoding == 'hashgrid_taichi':
+        from taichi_modules.hash_encoder import HashEncoderTaichi
+        encoder = HashEncoderTaichi(batch_size=4096) #TODO: hard encoded batch size
 
     else:
         raise NotImplementedError('Unknown encoding mode, choose from [None, frequency, sphere_harmonics, hashgrid, tiledgrid]')
