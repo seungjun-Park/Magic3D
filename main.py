@@ -113,6 +113,8 @@ if __name__ == '__main__':
 
     seed_everything(opt.seed)
 
+    print(torch.cuda.is_available())
+
     model = NeRFNetwork(opt)
 
     print(model)
