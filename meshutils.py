@@ -72,7 +72,7 @@ def decimate_mesh(verts, faces, target, backend='pymeshlab', remesh=False, optim
     return verts, faces
 
 
-def clean_mesh(verts, faces, v_pct=1, min_f=8, min_d=5, repair=True, remesh=True, remesh_size=0.01):
+def clean_mesh(verts, faces, v_pct=1, min_f=8, min_d=5, repair=True, remesh=False):
     # verts: [N, 3]
     # faces: [N, 3]
 
@@ -105,7 +105,7 @@ def clean_mesh(verts, faces, v_pct=1, min_f=8, min_d=5, repair=True, remesh=True
     
     if remesh:
         # ms.apply_coord_taubin_smoothing()
-        ms.meshing_isotropic_explicit_remeshing(iterations=3, targetlen=pml.AbsoluteValue(remesh_size))
+        ms.meshing_isotropic_explicit_remeshing(iterations=3, targetlen=pml.Percentage(1))
 
     # extract mesh
     m = ms.current_mesh()

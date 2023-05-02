@@ -116,22 +116,14 @@ venv.bak/
 
 # Rope project settings
 .ropeproject
-*.so
 
 # mkdocs documentation
 /site
-tmp*
-# data/
-ldm/data/
-trial*/
-.vs/
 
 # mypy
 .mypy_cache/
 .dmypy.json
 dmypy.json
-TOKEN
-*.ckpt
 
 # Pyre type checker
 .pyre/
@@ -142,6 +134,3 @@ slurm/
 trial/
 *.xml
 *.iml
-densegridencoder
-tets/256_tets.npz
-main.sh

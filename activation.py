@@ -16,6 +16,3 @@ class _trunc_exp(Function):
         return g * torch.exp(x.clamp(max=15))
 
 trunc_exp = _trunc_exp.apply
-
-def biased_softplus(x, bias=0):
-    return torch.nn.functional.softplus(x - bias)
