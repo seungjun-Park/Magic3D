@@ -1,293 +1,0 @@
-Namespace(H=800, O=True, O2=False, W=800, albedo=False, albedo_iters=1000, angle_front=60, angle_overhead=30, backbone='grid', bg_radius=1.4, blob_density=10, blob_radius=0.5, bound=1, ckpt='latest', cuda_ray=True, decimate_target=100000.0, density_activation='softplus', density_thresh=0.1, dir_text=True, dt_gamma=0, eval_interval=1, fovy=60, fovy_range=[40, 70], fp16=True, gui=False, guidance='stable-diffusion', h=64, hf_key=None, iters=10000, jitter_pose=False, lambda_entropy=0.0001, lambda_opacity=0, lambda_orient=0.01, lambda_tv=0, light_phi=0, light_theta=60, lr=0.001, max_ray_batch=4096, max_spp=1, max_steps=1024, mcubes_resolution=256, min_lr=0.0001, min_near=0.1, negative='', num_steps=64, optim='adan', radius=3, radius_range=[1.0, 1.5], save_mesh=False, sd_version='2.1', seed=0, suppress_face=False, test=False, text='a hamburger', uniform_sphere_rate=0.5, update_extra_interval=16, upsample_steps=32, w=64, warm_iters=500, workspace='trial')
-NeRFNetwork(
-  (encoder): GridEncoder: input_dim=3 num_levels=16 level_dim=2 resolution=16 -> 2048 per_level_scale=1.3819 params=(6119864, 2) gridtype=hash align_corners=False interpolation=smoothstep
-  (sigma_net): MLP(
-    (net): ModuleList(
-      (0): Linear(in_features=32, out_features=4, bias=True)
-    )
-  )
-  (normal_net): MLP(
-    (net): ModuleList(
-      (0): Linear(in_features=32, out_features=3, bias=True)
-    )
-  )
-  (encoder_bg): FreqEncoder: input_dim=3 degree=4 output_dim=27
-  (bg_net): MLP(
-    (net): ModuleList(
-      (0): Linear(in_features=27, out_features=16, bias=True)
-      (1): Linear(in_features=16, out_features=3, bias=True)
-    )
-  )
-)
-[INFO] loading stable diffusion...
-Downloading (…)on_pytorch_model.bin:   0%|          | 0.00/335M [00:00<?, ?B/s]Downloading (…)on_pytorch_model.bin:   3%|▎         | 10.5M/335M [00:00<00:28, 11.4MB/s]Downloading (…)on_pytorch_model.bin:   6%|▋         | 21.0M/335M [00:01<00:27, 11.3MB/s]Downloading (…)on_pytorch_model.bin:   9%|▉         | 31.5M/335M [00:02<00:26, 11.4MB/s]Downloading (…)on_pytorch_model.bin:  13%|█▎        | 41.9M/335M [00:03<00:25, 11.5MB/s]Downloading (…)on_pytorch_model.bin:  16%|█▌        | 52.4M/335M [00:04<00:24, 11.4MB/s]Downloading (…)on_pytorch_model.bin:  19%|█▉        | 62.9M/335M [00:05<00:23, 11.4MB/s]Downloading (…)on_pytorch_model.bin:  22%|██▏       | 73.4M/335M [00:06<00:22, 11.4MB/s]Downloading (…)on_pytorch_model.bin:  25%|██▌       | 83.9M/335M [00:07<00:22, 11.4MB/s]Downloading (…)on_pytorch_model.bin:  28%|██▊       | 94.4M/335M [00:08<00:21, 11.4MB/s]Downloading (…)on_pytorch_model.bin:  31%|███▏      | 105M/335M [00:09<00:20, 11.3MB/s] Downloading (…)on_pytorch_model.bin:  34%|███▍      | 115M/335M [00:10<00:19, 11.4MB/s]Downloading (…)on_pytorch_model.bin:  38%|███▊      | 126M/335M [00:11<00:18, 11.4MB/s]Downloading (…)on_pytorch_model.bin:  41%|████      | 136M/335M [00:11<00:17, 11.4MB/s]Downloading (…)on_pytorch_model.bin:  44%|████▍     | 147M/335M [00:12<00:16, 11.4MB/s]Downloading (…)on_pytorch_model.bin:  47%|████▋     | 157M/335M [00:13<00:15, 11.4MB/s]Downloading (…)on_pytorch_model.bin:  50%|█████     | 168M/335M [00:14<00:14, 11.4MB/s]Downloading (…)on_pytorch_model.bin:  53%|█████▎    | 178M/335M [00:15<00:13, 11.4MB/s]Downloading (…)on_pytorch_model.bin:  56%|█████▋    | 189M/335M [00:16<00:12, 11.3MB/s]Downloading (…)on_pytorch_model.bin:  60%|█████▉    | 199M/335M [00:17<00:11, 11.4MB/s]Downloading (…)on_pytorch_model.bin:  63%|██████▎   | 210M/335M [00:18<00:11, 10.8MB/s]Downloading (…)on_pytorch_model.bin:  66%|██████▌   | 220M/335M [00:19<00:10, 11.0MB/s]Downloading (…)on_pytorch_model.bin:  69%|██████▉   | 231M/335M [00:20<00:09, 11.1MB/s]Downloading (…)on_pytorch_model.bin:  72%|███████▏  | 241M/335M [00:21<00:08, 11.2MB/s]Downloading (…)on_pytorch_model.bin:  75%|███████▌  | 252M/335M [00:22<00:07, 11.2MB/s]Downloading (…)on_pytorch_model.bin:  78%|███████▊  | 262M/335M [00:23<00:06, 11.4MB/s]Downloading (…)on_pytorch_model.bin:  81%|████████▏ | 273M/335M [00:24<00:05, 11.4MB/s]Downloading (…)on_pytorch_model.bin:  85%|████████▍ | 283M/335M [00:25<00:04, 11.5MB/s]Downloading (…)on_pytorch_model.bin:  88%|████████▊ | 294M/335M [00:25<00:03, 11.4MB/s]Downloading (…)on_pytorch_model.bin:  91%|█████████ | 304M/335M [00:26<00:02, 11.4MB/s]Downloading (…)on_pytorch_model.bin:  94%|█████████▍| 315M/335M [00:27<00:01, 11.4MB/s]Downloading (…)on_pytorch_model.bin:  97%|█████████▋| 325M/335M [00:28<00:00, 11.4MB/s]Downloading (…)on_pytorch_model.bin: 100%|██████████| 335M/335M [00:29<00:00, 11.4MB/s]Downloading (…)on_pytorch_model.bin: 100%|██████████| 335M/335M [00:29<00:00, 11.3MB/s]
-Downloading (…)main/vae/config.json:   0%|          | 0.00/553 [00:00<?, ?B/s]Downloading (…)main/vae/config.json: 100%|██████████| 553/553 [00:00<00:00, 51.9kB/s]
-Downloading (…)tokenizer/vocab.json:   0%|          | 0.00/1.06M [00:00<?, ?B/s]Downloading (…)tokenizer/vocab.json: 100%|██████████| 1.06M/1.06M [00:00<00:00, 1.36MB/s]Downloading (…)tokenizer/vocab.json: 100%|██████████| 1.06M/1.06M [00:00<00:00, 1.36MB/s]
-Downloading (…)tokenizer/merges.txt:   0%|          | 0.00/525k [00:00<?, ?B/s]Downloading (…)tokenizer/merges.txt: 100%|██████████| 525k/525k [00:00<00:00, 972kB/s]Downloading (…)tokenizer/merges.txt: 100%|██████████| 525k/525k [00:00<00:00, 969kB/s]
-Downloading (…)cial_tokens_map.json:   0%|          | 0.00/460 [00:00<?, ?B/s]Downloading (…)cial_tokens_map.json: 100%|██████████| 460/460 [00:00<00:00, 134kB/s]
-Downloading (…)okenizer_config.json:   0%|          | 0.00/807 [00:00<?, ?B/s]Downloading (…)okenizer_config.json: 100%|██████████| 807/807 [00:00<00:00, 220kB/s]
-Downloading (…)_encoder/config.json:   0%|          | 0.00/613 [00:00<?, ?B/s]Downloading (…)_encoder/config.json: 100%|██████████| 613/613 [00:00<00:00, 185kB/s]
-Downloading pytorch_model.bin:   0%|          | 0.00/1.36G [00:00<?, ?B/s]Downloading pytorch_model.bin:   1%|          | 10.5M/1.36G [00:00<01:57, 11.5MB/s]Downloading pytorch_model.bin:   2%|▏         | 21.0M/1.36G [00:01<01:57, 11.4MB/s]Downloading pytorch_model.bin:   2%|▏         | 31.5M/1.36G [00:02<01:56, 11.5MB/s]Downloading pytorch_model.bin:   3%|▎         | 41.9M/1.36G [00:03<01:55, 11.5MB/s]Downloading pytorch_model.bin:   4%|▍         | 52.4M/1.36G [00:04<01:54, 11.4MB/s]Downloading pytorch_model.bin:   5%|▍         | 62.9M/1.36G [00:05<01:54, 11.4MB/s]Downloading pytorch_model.bin:   5%|▌         | 73.4M/1.36G [00:06<01:52, 11.4MB/s]Downloading pytorch_model.bin:   6%|▌         | 83.9M/1.36G [00:07<01:52, 11.4MB/s]Downloading pytorch_model.bin:   7%|▋         | 94.4M/1.36G [00:08<01:51, 11.3MB/s]Downloading pytorch_model.bin:   8%|▊         | 105M/1.36G [00:09<01:50, 11.4MB/s] Downloading pytorch_model.bin:   8%|▊         | 115M/1.36G [00:10<01:56, 10.7MB/s]Downloading pytorch_model.bin:   9%|▉         | 126M/1.36G [00:11<01:53, 10.9MB/s]Downloading pytorch_model.bin:  10%|█         | 136M/1.36G [00:12<01:50, 11.0MB/s]Downloading pytorch_model.bin:  11%|█         | 147M/1.36G [00:13<01:49, 11.1MB/s]Downloading pytorch_model.bin:  12%|█▏        | 157M/1.36G [00:13<01:47, 11.2MB/s]Downloading pytorch_model.bin:  12%|█▏        | 168M/1.36G [00:14<01:45, 11.3MB/s]Downloading pytorch_model.bin:  13%|█▎        | 178M/1.36G [00:15<01:44, 11.3MB/s]Downloading pytorch_model.bin:  14%|█▍        | 189M/1.36G [00:16<01:43, 11.3MB/s]Downloading pytorch_model.bin:  15%|█▍        | 199M/1.36G [00:17<01:42, 11.3MB/s]Downloading pytorch_model.bin:  15%|█▌        | 210M/1.36G [00:18<01:41, 11.4MB/s]Downloading pytorch_model.bin:  16%|█▌        | 220M/1.36G [00:19<01:40, 11.3MB/s]Downloading pytorch_model.bin:  17%|█▋        | 231M/1.36G [00:20<01:39, 11.3MB/s]Downloading pytorch_model.bin:  18%|█▊        | 241M/1.36G [00:21<01:39, 11.3MB/s]Downloading pytorch_model.bin:  18%|█▊        | 252M/1.36G [00:22<01:37, 11.3MB/s]Downloading pytorch_model.bin:  19%|█▉        | 262M/1.36G [00:23<01:36, 11.4MB/s]Downloading pytorch_model.bin:  20%|██        | 273M/1.36G [00:24<01:35, 11.4MB/s]Downloading pytorch_model.bin:  21%|██        | 283M/1.36G [00:25<01:34, 11.4MB/s]Downloading pytorch_model.bin:  22%|██▏       | 294M/1.36G [00:25<01:33, 11.4MB/s]Downloading pytorch_model.bin:  22%|██▏       | 304M/1.36G [00:26<01:32, 11.4MB/s]Downloading pytorch_model.bin:  23%|██▎       | 315M/1.36G [00:27<01:31, 11.4MB/s]Downloading pytorch_model.bin:  24%|██▍       | 325M/1.36G [00:28<01:30, 11.4MB/s]Downloading pytorch_model.bin:  25%|██▍       | 336M/1.36G [00:29<01:30, 11.4MB/s]Downloading pytorch_model.bin:  25%|██▌       | 346M/1.36G [00:30<01:29, 11.4MB/s]Downloading pytorch_model.bin:  26%|██▌       | 357M/1.36G [00:31<01:32, 10.9MB/s]Downloading pytorch_model.bin:  27%|██▋       | 367M/1.36G [00:32<01:30, 11.0MB/s]Downloading pytorch_model.bin:  28%|██▊       | 377M/1.36G [00:33<01:28, 11.1MB/s]Downloading pytorch_model.bin:  28%|██▊       | 388M/1.36G [00:34<01:26, 11.2MB/s]Downloading pytorch_model.bin:  29%|██▉       | 398M/1.36G [00:35<01:25, 11.3MB/s]Downloading pytorch_model.bin:  30%|███       | 409M/1.36G [00:36<01:24, 11.3MB/s]Downloading pytorch_model.bin:  31%|███       | 419M/1.36G [00:37<01:22, 11.4MB/s]Downloading pytorch_model.bin:  32%|███▏      | 430M/1.36G [00:38<01:26, 10.8MB/s]Downloading pytorch_model.bin:  32%|███▏      | 440M/1.36G [00:39<01:24, 10.9MB/s]Downloading pytorch_model.bin:  33%|███▎      | 451M/1.36G [00:40<01:22, 11.1MB/s]Downloading pytorch_model.bin:  34%|███▍      | 461M/1.36G [00:40<01:20, 11.2MB/s]Downloading pytorch_model.bin:  35%|███▍      | 472M/1.36G [00:41<01:19, 11.2MB/s]Downloading pytorch_model.bin:  35%|███▌      | 482M/1.36G [00:42<01:18, 11.2MB/s]Downloading pytorch_model.bin:  36%|███▌      | 493M/1.36G [00:43<01:17, 11.2MB/s]Downloading pytorch_model.bin:  37%|███▋      | 503M/1.36G [00:44<01:16, 11.2MB/s]Downloading pytorch_model.bin:  38%|███▊      | 514M/1.36G [00:45<01:16, 11.1MB/s]Downloading pytorch_model.bin:  39%|███▊      | 524M/1.36G [00:46<01:14, 11.2MB/s]Downloading pytorch_model.bin:  39%|███▉      | 535M/1.36G [00:47<01:15, 10.9MB/s]Downloading pytorch_model.bin:  40%|████      | 545M/1.36G [00:48<01:13, 11.1MB/s]Downloading pytorch_model.bin:  41%|████      | 556M/1.36G [00:49<01:12, 11.2MB/s]Downloading pytorch_model.bin:  42%|████▏     | 566M/1.36G [00:50<01:10, 11.2MB/s]Downloading pytorch_model.bin:  42%|████▏     | 577M/1.36G [00:51<01:09, 11.3MB/s]Downloading pytorch_model.bin:  43%|████▎     | 587M/1.36G [00:52<01:08, 11.3MB/s]Downloading pytorch_model.bin:  44%|████▍     | 598M/1.36G [00:53<01:07, 11.3MB/s]Downloading pytorch_model.bin:  45%|████▍     | 608M/1.36G [00:54<01:06, 11.3MB/s]Downloading pytorch_model.bin:  45%|████▌     | 619M/1.36G [00:54<01:05, 11.3MB/s]Downloading pytorch_model.bin:  46%|████▌     | 629M/1.36G [00:55<01:04, 11.4MB/s]Downloading pytorch_model.bin:  47%|████▋     | 640M/1.36G [00:56<01:03, 11.4MB/s]Downloading pytorch_model.bin:  48%|████▊     | 650M/1.36G [00:57<01:02, 11.4MB/s]Downloading pytorch_model.bin:  49%|████▊     | 661M/1.36G [00:58<01:01, 11.4MB/s]Downloading pytorch_model.bin:  49%|████▉     | 671M/1.36G [00:59<01:00, 11.4MB/s]Downloading pytorch_model.bin:  50%|█████     | 682M/1.36G [01:00<00:59, 11.4MB/s]Downloading pytorch_model.bin:  51%|█████     | 692M/1.36G [01:01<01:02, 10.8MB/s]Downloading pytorch_model.bin:  52%|█████▏    | 703M/1.36G [01:02<01:00, 11.0MB/s]Downloading pytorch_model.bin:  52%|█████▏    | 713M/1.36G [01:03<00:58, 11.1MB/s]Downloading pytorch_model.bin:  53%|█████▎    | 724M/1.36G [01:04<00:57, 11.2MB/s]Downloading pytorch_model.bin:  54%|█████▍    | 734M/1.36G [01:05<00:55, 11.3MB/s]Downloading pytorch_model.bin:  55%|█████▍    | 744M/1.36G [01:06<00:54, 11.3MB/s]Downloading pytorch_model.bin:  55%|█████▌    | 755M/1.36G [01:07<00:53, 11.3MB/s]Downloading pytorch_model.bin:  56%|█████▌    | 765M/1.36G [01:08<00:52, 11.3MB/s]Downloading pytorch_model.bin:  57%|█████▋    | 776M/1.36G [01:08<00:51, 11.3MB/s]Downloading pytorch_model.bin:  58%|█████▊    | 786M/1.36G [01:09<00:50, 11.4MB/s]Downloading pytorch_model.bin:  59%|█████▊    | 797M/1.36G [01:10<00:49, 11.4MB/s]Downloading pytorch_model.bin:  59%|█████▉    | 807M/1.36G [01:11<00:48, 11.4MB/s]Downloading pytorch_model.bin:  60%|██████    | 818M/1.36G [01:12<00:47, 11.4MB/s]Downloading pytorch_model.bin:  61%|██████    | 828M/1.36G [01:13<00:46, 11.4MB/s]Downloading pytorch_model.bin:  62%|██████▏   | 839M/1.36G [01:14<00:45, 11.4MB/s]Downloading pytorch_model.bin:  62%|██████▏   | 849M/1.36G [01:15<00:44, 11.4MB/s]Downloading pytorch_model.bin:  63%|██████▎   | 860M/1.36G [01:16<00:46, 10.8MB/s]Downloading pytorch_model.bin:  64%|██████▍   | 870M/1.36G [01:17<00:44, 11.0MB/s]Downloading pytorch_model.bin:  65%|██████▍   | 881M/1.36G [01:18<00:43, 11.1MB/s]Downloading pytorch_model.bin:  65%|██████▌   | 891M/1.36G [01:19<00:42, 11.2MB/s]Downloading pytorch_model.bin:  66%|██████▌   | 902M/1.36G [01:20<00:40, 11.3MB/s]Downloading pytorch_model.bin:  67%|██████▋   | 912M/1.36G [01:21<00:39, 11.3MB/s]Downloading pytorch_model.bin:  68%|██████▊   | 923M/1.36G [01:21<00:38, 11.3MB/s]Downloading pytorch_model.bin:  69%|██████▊   | 933M/1.36G [01:22<00:37, 11.3MB/s]Downloading pytorch_model.bin:  69%|██████▉   | 944M/1.36G [01:23<00:36, 11.4MB/s]Downloading pytorch_model.bin:  70%|███████   | 954M/1.36G [01:24<00:35, 11.4MB/s]Downloading pytorch_model.bin:  71%|███████   | 965M/1.36G [01:25<00:34, 11.4MB/s]Downloading pytorch_model.bin:  72%|███████▏  | 975M/1.36G [01:26<00:33, 11.4MB/s]Downloading pytorch_model.bin:  72%|███████▏  | 986M/1.36G [01:27<00:32, 11.4MB/s]Downloading pytorch_model.bin:  73%|███████▎  | 996M/1.36G [01:28<00:33, 10.8MB/s]Downloading pytorch_model.bin:  74%|███████▍  | 1.01G/1.36G [01:29<00:32, 10.9MB/s]Downloading pytorch_model.bin:  75%|███████▍  | 1.02G/1.36G [01:30<00:31, 11.1MB/s]Downloading pytorch_model.bin:  75%|███████▌  | 1.03G/1.36G [01:31<00:29, 11.2MB/s]Downloading pytorch_model.bin:  76%|███████▌  | 1.04G/1.36G [01:32<00:28, 11.2MB/s]Downloading pytorch_model.bin:  77%|███████▋  | 1.05G/1.36G [01:33<00:27, 11.3MB/s]Downloading pytorch_model.bin:  78%|███████▊  | 1.06G/1.36G [01:34<00:26, 11.3MB/s]Downloading pytorch_model.bin:  79%|███████▊  | 1.07G/1.36G [01:35<00:25, 11.4MB/s]Downloading pytorch_model.bin:  79%|███████▉  | 1.08G/1.36G [01:35<00:24, 11.4MB/s]Downloading pytorch_model.bin:  80%|████████  | 1.09G/1.36G [01:36<00:23, 11.4MB/s]Downloading pytorch_model.bin:  81%|████████  | 1.10G/1.36G [01:37<00:23, 11.0MB/s]Downloading pytorch_model.bin:  82%|████████▏ | 1.11G/1.36G [01:38<00:22, 11.1MB/s]Downloading pytorch_model.bin:  82%|████████▏ | 1.12G/1.36G [01:39<00:21, 11.3MB/s]Downloading pytorch_model.bin:  83%|████████▎ | 1.13G/1.36G [01:40<00:20, 11.3MB/s]Downloading pytorch_model.bin:  84%|████████▍ | 1.14G/1.36G [01:41<00:19, 11.3MB/s]Downloading pytorch_model.bin:  85%|████████▍ | 1.15G/1.36G [01:42<00:19, 10.7MB/s]Downloading pytorch_model.bin:  85%|████████▌ | 1.16G/1.36G [01:43<00:18, 10.9MB/s]Downloading pytorch_model.bin:  86%|████████▌ | 1.17G/1.36G [01:44<00:16, 11.1MB/s]Downloading pytorch_model.bin:  87%|████████▋ | 1.18G/1.36G [01:45<00:15, 11.2MB/s]Downloading pytorch_model.bin:  88%|████████▊ | 1.20G/1.36G [01:46<00:14, 11.2MB/s]Downloading pytorch_model.bin:  89%|████████▊ | 1.21G/1.36G [01:47<00:13, 11.3MB/s]Downloading pytorch_model.bin:  89%|████████▉ | 1.22G/1.36G [01:48<00:12, 11.3MB/s]Downloading pytorch_model.bin:  90%|█████████ | 1.23G/1.36G [01:49<00:11, 11.4MB/s]Downloading pytorch_model.bin:  91%|█████████ | 1.24G/1.36G [01:50<00:10, 11.4MB/s]Downloading pytorch_model.bin:  92%|█████████▏| 1.25G/1.36G [01:50<00:10, 11.4MB/s]Downloading pytorch_model.bin:  92%|█████████▏| 1.26G/1.36G [01:51<00:09, 11.4MB/s]Downloading pytorch_model.bin:  93%|█████████▎| 1.27G/1.36G [01:52<00:08, 11.4MB/s]Downloading pytorch_model.bin:  94%|█████████▍| 1.28G/1.36G [01:53<00:07, 11.4MB/s]Downloading pytorch_model.bin:  95%|█████████▍| 1.29G/1.36G [01:54<00:06, 11.4MB/s]Downloading pytorch_model.bin:  95%|█████████▌| 1.30G/1.36G [01:55<00:05, 11.4MB/s]Downloading pytorch_model.bin:  96%|█████████▋| 1.31G/1.36G [01:56<00:04, 11.4MB/s]Downloading pytorch_model.bin:  97%|█████████▋| 1.32G/1.36G [01:57<00:03, 11.4MB/s]Downloading pytorch_model.bin:  98%|█████████▊| 1.33G/1.36G [01:58<00:02, 11.4MB/s]Downloading pytorch_model.bin:  99%|█████████▊| 1.34G/1.36G [01:59<00:01, 11.4MB/s]Downloading pytorch_model.bin:  99%|█████████▉| 1.35G/1.36G [02:00<00:00, 11.4MB/s]Downloading pytorch_model.bin: 100%|██████████| 1.36G/1.36G [02:00<00:00, 11.4MB/s]Downloading pytorch_model.bin: 100%|██████████| 1.36G/1.36G [02:00<00:00, 11.3MB/s]
-Downloading (…)on_pytorch_model.bin:   0%|          | 0.00/3.46G [00:00<?, ?B/s]Downloading (…)on_pytorch_model.bin:   0%|          | 10.5M/3.46G [00:00<05:00, 11.5MB/s]Downloading (…)on_pytorch_model.bin:   1%|          | 21.0M/3.46G [00:01<05:01, 11.4MB/s]Downloading (…)on_pytorch_model.bin:   1%|          | 31.5M/3.46G [00:02<05:03, 11.3MB/s]Downloading (…)on_pytorch_model.bin:   1%|          | 41.9M/3.46G [00:03<05:02, 11.3MB/s]Downloading (…)on_pytorch_model.bin:   2%|▏         | 52.4M/3.46G [00:04<05:02, 11.3MB/s]Downloading (…)on_pytorch_model.bin:   2%|▏         | 62.9M/3.46G [00:05<05:02, 11.2MB/s]Downloading (…)on_pytorch_model.bin:   2%|▏         | 73.4M/3.46G [00:06<05:02, 11.2MB/s]Downloading (…)on_pytorch_model.bin:   2%|▏         | 83.9M/3.46G [00:07<04:59, 11.3MB/s]Downloading (…)on_pytorch_model.bin:   3%|▎         | 94.4M/3.46G [00:08<04:57, 11.3MB/s]Downloading (…)on_pytorch_model.bin:   3%|▎         | 105M/3.46G [00:09<04:56, 11.3MB/s] Downloading (…)on_pytorch_model.bin:   3%|▎         | 115M/3.46G [00:10<05:15, 10.6MB/s]╭───────────────────── Traceback (most recent call last) ──────────────────────╮
-│ /data/james5450/anaconda3/envs/dreamfusion/lib/python3.8/site-packages/urlli │
-│ b3/response.py:444 in _error_catcher                                         │
-│                                                                              │
-│   441 │   │                                                                  │
-│   442 │   │   try:                                                           │
-│   443 │   │   │   try:                                                       │
-│ ❱ 444 │   │   │   │   yield                                                  │
-│   445 │   │   │                                                              │
-│   446 │   │   │   except SocketTimeout:                                      │
-│   447 │   │   │   │   # FIXME: Ideally we'd like to include the url in the R │
-│                                                                              │
-│ /data/james5450/anaconda3/envs/dreamfusion/lib/python3.8/site-packages/urlli │
-│ b3/response.py:567 in read                                                   │
-│                                                                              │
-│   564 │   │   fp_closed = getattr(self._fp, "closed", False)                 │
-│   565 │   │                                                                  │
-│   566 │   │   with self._error_catcher():                                    │
-│ ❱ 567 │   │   │   data = self._fp_read(amt) if not fp_closed else b""        │
-│   568 │   │   │   if amt is None:                                            │
-│   569 │   │   │   │   flush_decoder = True                                   │
-│   570 │   │   │   else:                                                      │
-│                                                                              │
-│ /data/james5450/anaconda3/envs/dreamfusion/lib/python3.8/site-packages/urlli │
-│ b3/response.py:525 in _fp_read                                               │
-│                                                                              │
-│   522 │   │   │   │   │   amt -= chunk_amt                                   │
-│   523 │   │   │   │   else:                                                  │
-│   524 │   │   │   │   │   chunk_amt = max_chunk_amt                          │
-│ ❱ 525 │   │   │   │   data = self._fp.read(chunk_amt)                        │
-│   526 │   │   │   │   if not data:                                           │
-│   527 │   │   │   │   │   break                                              │
-│   528 │   │   │   │   buffer.write(data)                                     │
-│                                                                              │
-│ /data/james5450/anaconda3/envs/dreamfusion/lib/python3.8/http/client.py:458  │
-│ in read                                                                      │
-│                                                                              │
-│    455 │   │   if amt is not None:                                           │
-│    456 │   │   │   # Amount is given, implement using readinto               │
-│    457 │   │   │   b = bytearray(amt)                                        │
-│ ❱  458 │   │   │   n = self.readinto(b)                                      │
-│    459 │   │   │   return memoryview(b)[:n].tobytes()                        │
-│    460 │   │   else:                                                         │
-│    461 │   │   │   # Amount is not given (unbounded read) so we must check s │
-│                                                                              │
-│ /data/james5450/anaconda3/envs/dreamfusion/lib/python3.8/http/client.py:502  │
-│ in readinto                                                                  │
-│                                                                              │
-│    499 │   │   # we do not use _safe_read() here because this may be a .will │
-│    500 │   │   # connection, and the user is reading more bytes than will be │
-│    501 │   │   # (for example, reading in 1k chunks)                         │
-│ ❱  502 │   │   n = self.fp.readinto(b)                                       │
-│    503 │   │   if not n and b:                                               │
-│    504 │   │   │   # Ideally, we would raise IncompleteRead if the content-l │
-│    505 │   │   │   # wasn't satisfied, but it might break compatibility.     │
-│                                                                              │
-│ /data/james5450/anaconda3/envs/dreamfusion/lib/python3.8/socket.py:669 in    │
-│ readinto                                                                     │
-│                                                                              │
-│   666 │   │   │   raise OSError("cannot read from timed out object")         │
-│   667 │   │   while True:                                                    │
-│   668 │   │   │   try:                                                       │
-│ ❱ 669 │   │   │   │   return self._sock.recv_into(b)                         │
-│   670 │   │   │   except timeout:                                            │
-│   671 │   │   │   │   self._timeout_occurred = True                          │
-│   672 │   │   │   │   raise                                                  │
-│                                                                              │
-│ /data/james5450/anaconda3/envs/dreamfusion/lib/python3.8/ssl.py:1241 in      │
-│ recv_into                                                                    │
-│                                                                              │
-│   1238 │   │   │   │   raise ValueError(                                     │
-│   1239 │   │   │   │     "non-zero flags not allowed in calls to recv_into() │
-│   1240 │   │   │   │     self.__class__)                                     │
-│ ❱ 1241 │   │   │   return self.read(nbytes, buffer)                          │
-│   1242 │   │   else:                                                         │
-│   1243 │   │   │   return super().recv_into(buffer, nbytes, flags)           │
-│   1244                                                                       │
-│                                                                              │
-│ /data/james5450/anaconda3/envs/dreamfusion/lib/python3.8/ssl.py:1099 in read │
-│                                                                              │
-│   1096 │   │   │   raise ValueError("Read on closed or unwrapped SSL socket. │
-│   1097 │   │   try:                                                          │
-│   1098 │   │   │   if buffer is not None:                                    │
-│ ❱ 1099 │   │   │   │   return self._sslobj.read(len, buffer)                 │
-│   1100 │   │   │   else:                                                     │
-│   1101 │   │   │   │   return self._sslobj.read(len)                         │
-│   1102 │   │   except SSLError as x:                                         │
-╰──────────────────────────────────────────────────────────────────────────────╯
-timeout: The read operation timed out
-
-During handling of the above exception, another exception occurred:
-
-╭───────────────────── Traceback (most recent call last) ──────────────────────╮
-│ /data/james5450/anaconda3/envs/dreamfusion/lib/python3.8/site-packages/reque │
-│ sts/models.py:816 in generate                                                │
-│                                                                              │
-│    813 │   │   │   # Special case for urllib3.                               │
-│    814 │   │   │   if hasattr(self.raw, "stream"):                           │
-│    815 │   │   │   │   try:                                                  │
-│ ❱  816 │   │   │   │   │   yield from self.raw.stream(chunk_size, decode_con │
-│    817 │   │   │   │   except ProtocolError as e:                            │
-│    818 │   │   │   │   │   raise ChunkedEncodingError(e)                     │
-│    819 │   │   │   │   except DecodeError as e:                              │
-│                                                                              │
-│ /data/james5450/anaconda3/envs/dreamfusion/lib/python3.8/site-packages/urlli │
-│ b3/response.py:628 in stream                                                 │
-│                                                                              │
-│   625 │   │   │   │   yield line                                             │
-│   626 │   │   else:                                                          │
-│   627 │   │   │   while not is_fp_closed(self._fp):                          │
-│ ❱ 628 │   │   │   │   data = self.read(amt=amt, decode_content=decode_conten │
-│   629 │   │   │   │                                                          │
-│   630 │   │   │   │   if data:                                               │
-│   631 │   │   │   │   │   yield data                                         │
-│                                                                              │
-│ /data/james5450/anaconda3/envs/dreamfusion/lib/python3.8/site-packages/urlli │
-│ b3/response.py:593 in read                                                   │
-│                                                                              │
-│   590 │   │   │   │   │   │   # addressing it here to make sure IncompleteRe │
-│   591 │   │   │   │   │   │   # raised during streaming, so all calls with i │
-│   592 │   │   │   │   │   │   # Content-Length are caught.                   │
-│ ❱ 593 │   │   │   │   │   │   raise IncompleteRead(self._fp_bytes_read, self │
-│   594 │   │                                                                  │
-│   595 │   │   if data:                                                       │
-│   596 │   │   │   self._fp_bytes_read += len(data)                           │
-│                                                                              │
-│ /data/james5450/anaconda3/envs/dreamfusion/lib/python3.8/contextlib.py:131   │
-│ in __exit__                                                                  │
-│                                                                              │
-│   128 │   │   │   │   # tell if we get the same exception back               │
-│   129 │   │   │   │   value = type()                                         │
-│   130 │   │   │   try:                                                       │
-│ ❱ 131 │   │   │   │   self.gen.throw(type, value, traceback)                 │
-│   132 │   │   │   except StopIteration as exc:                               │
-│   133 │   │   │   │   # Suppress StopIteration *unless* it's the same except │
-│   134 │   │   │   │   # was passed to throw().  This prevents a StopIteratio │
-│                                                                              │
-│ /data/james5450/anaconda3/envs/dreamfusion/lib/python3.8/site-packages/urlli │
-│ b3/response.py:449 in _error_catcher                                         │
-│                                                                              │
-│   446 │   │   │   except SocketTimeout:                                      │
-│   447 │   │   │   │   # FIXME: Ideally we'd like to include the url in the R │
-│   448 │   │   │   │   # there is yet no clean way to get at it from this con │
-│ ❱ 449 │   │   │   │   raise ReadTimeoutError(self._pool, None, "Read timed o │
-│   450 │   │   │                                                              │
-│   451 │   │   │   except BaseSSLError as e:                                  │
-│   452 │   │   │   │   # FIXME: Is there a better way to differentiate betwee │
-╰──────────────────────────────────────────────────────────────────────────────╯
-ReadTimeoutError: HTTPSConnectionPool(host='cdn-lfs.huggingface.co', port=443): 
-Read timed out.
-
-During handling of the above exception, another exception occurred:
-
-╭───────────────────── Traceback (most recent call last) ──────────────────────╮
-│ /data/james5450/anaconda3/envs/dreamfusion/lib/python3.8/site-packages/diffu │
-│ sers/models/modeling_utils.py:857 in _get_model_file                         │
-│                                                                              │
-│   854 │   │   │   │   )                                                      │
-│   855 │   │   try:                                                           │
-│   856 │   │   │   # 2. Load model file as usual                              │
-│ ❱ 857 │   │   │   model_file = hf_hub_download(                              │
-│   858 │   │   │   │   pretrained_model_name_or_path,                         │
-│   859 │   │   │   │   filename=weights_name,                                 │
-│   860 │   │   │   │   cache_dir=cache_dir,                                   │
-│                                                                              │
-│ /data/james5450/anaconda3/envs/dreamfusion/lib/python3.8/site-packages/huggi │
-│ ngface_hub/utils/_validators.py:120 in _inner_fn                             │
-│                                                                              │
-│   117 │   │   if check_use_auth_token:                                       │
-│   118 │   │   │   kwargs = smoothly_deprecate_use_auth_token(fn_name=fn.__na │
-│   119 │   │                                                                  │
-│ ❱ 120 │   │   return fn(*args, **kwargs)                                     │
-│   121 │                                                                      │
-│   122 │   return _inner_fn  # type: ignore                                   │
-│   123                                                                        │
-│                                                                              │
-│ /data/james5450/anaconda3/envs/dreamfusion/lib/python3.8/site-packages/huggi │
-│ ngface_hub/file_download.py:1326 in hf_hub_download                          │
-│                                                                              │
-│   1323 │   │   with temp_file_manager() as temp_file:                        │
-│   1324 │   │   │   logger.info("downloading %s to %s", url, temp_file.name)  │
-│   1325 │   │   │                                                             │
-│ ❱ 1326 │   │   │   http_get(                                                 │
-│   1327 │   │   │   │   url_to_download,                                      │
-│   1328 │   │   │   │   temp_file,                                            │
-│   1329 │   │   │   │   proxies=proxies,                                      │
-│                                                                              │
-│ /data/james5450/anaconda3/envs/dreamfusion/lib/python3.8/site-packages/huggi │
-│ ngface_hub/file_download.py:538 in http_get                                  │
-│                                                                              │
-│    535 │   │   desc=f"Downloading {displayed_name}",                         │
-│    536 │   │   disable=bool(logger.getEffectiveLevel() == logging.NOTSET),   │
-│    537 │   )                                                                 │
-│ ❱  538 │   for chunk in r.iter_content(chunk_size=10 * 1024 * 1024):         │
-│    539 │   │   if chunk:  # filter out keep-alive new chunks                 │
-│    540 │   │   │   progress.update(len(chunk))                               │
-│    541 │   │   │   temp_file.write(chunk)                                    │
-│                                                                              │
-│ /data/james5450/anaconda3/envs/dreamfusion/lib/python3.8/site-packages/reque │
-│ sts/models.py:822 in generate                                                │
-│                                                                              │
-│    819 │   │   │   │   except DecodeError as e:                              │
-│    820 │   │   │   │   │   raise ContentDecodingError(e)                     │
-│    821 │   │   │   │   except ReadTimeoutError as e:                         │
-│ ❱  822 │   │   │   │   │   raise ConnectionError(e)                          │
-│    823 │   │   │   │   except SSLError as e:                                 │
-│    824 │   │   │   │   │   raise RequestsSSLError(e)                         │
-│    825 │   │   │   else:                                                     │
-╰──────────────────────────────────────────────────────────────────────────────╯
-ConnectionError: HTTPSConnectionPool(host='cdn-lfs.huggingface.co', port=443): 
-Read timed out.
-
-During handling of the above exception, another exception occurred:
-
-╭───────────────────── Traceback (most recent call last) ──────────────────────╮
-│ /data/james5450/repos/dreamfusion-pytorch/main.py:163 in <module>            │
-│                                                                              │
-│   160 │   │                                                                  │
-│   161 │   │   if opt.guidance == 'stable-diffusion':                         │
-│   162 │   │   │   from sd import StableDiffusion                             │
-│ ❱ 163 │   │   │   guidance = StableDiffusion(device, opt.sd_version, opt.hf_ │
-│   164 │   │   elif opt.guidance == 'clip':                                   │
-│   165 │   │   │   from nerf.clip import CLIP                                 │
-│   166 │   │   │   guidance = CLIP(device)                                    │
-│                                                                              │
-│ /data/james5450/repos/dreamfusion-pytorch/sd.py:60 in __init__               │
-│                                                                              │
-│    57 │   │   self.vae = AutoencoderKL.from_pretrained(model_key, subfolder= │
-│    58 │   │   self.tokenizer = CLIPTokenizer.from_pretrained(model_key, subf │
-│    59 │   │   self.text_encoder = CLIPTextModel.from_pretrained(model_key, s │
-│ ❱  60 │   │   self.unet = UNet2DConditionModel.from_pretrained(model_key, su │
-│    61 │   │                                                                  │
-│    62 │   │   if is_xformers_available():                                    │
-│    63 │   │   │   self.unet.enable_xformers_memory_efficient_attention()     │
-│                                                                              │
-│ /data/james5450/anaconda3/envs/dreamfusion/lib/python3.8/site-packages/diffu │
-│ sers/models/modeling_utils.py:527 in from_pretrained                         │
-│                                                                              │
-│   524 │   │   │   │   except:  # noqa: E722                                  │
-│   525 │   │   │   │   │   pass                                               │
-│   526 │   │   │   if model_file is None:                                     │
-│ ❱ 527 │   │   │   │   model_file = _get_model_file(                          │
-│   528 │   │   │   │   │   pretrained_model_name_or_path,                     │
-│   529 │   │   │   │   │   weights_name=_add_variant(WEIGHTS_NAME, variant),  │
-│   530 │   │   │   │   │   cache_dir=cache_dir,                               │
-│                                                                              │
-│ /data/james5450/anaconda3/envs/dreamfusion/lib/python3.8/site-packages/diffu │
-│ sers/models/modeling_utils.py:902 in _get_model_file                         │
-│                                                                              │
-│   899 │   │   │   │   " offline mode at 'https://huggingface.co/docs/diffuse │
-│   900 │   │   │   )                                                          │
-│   901 │   │   except EnvironmentError:                                       │
-│ ❱ 902 │   │   │   raise EnvironmentError(                                    │
-│   903 │   │   │   │   f"Can't load the model for '{pretrained_model_name_or_ │
-│   904 │   │   │   │   "'https://huggingface.co/models', make sure you don't  │
-│   905 │   │   │   │   f"Otherwise, make sure '{pretrained_model_name_or_path │
-╰──────────────────────────────────────────────────────────────────────────────╯
-OSError: Can't load the model for 'stabilityai/stable-diffusion-2-1-base'. If 
-you were trying to load it from 'https://huggingface.co/models', make sure you 
-don't have a local directory with the same name. Otherwise, make sure 
-'stabilityai/stable-diffusion-2-1-base' is the correct path to a directory 
-containing a file named diffusion_pytorch_model.bin
-Downloading (…)on_pytorch_model.bin:   3%|▎         | 115M/3.46G [00:22<10:45, 5.18MB/s]
