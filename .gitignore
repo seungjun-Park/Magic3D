@@ -134,3 +134,4 @@ slurm/
 trial/
 *.xml
 *.iml
+trial2/
