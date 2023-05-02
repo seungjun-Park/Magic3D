@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name holoLDM_cosine_x0_holoLoss_1000_iter
+#SBATCH --job-name Magic3D_hamburger
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-gpu=4
 #SBATCH --mem-per-gpu=24G
@@ -8,6 +8,6 @@
 #SBATCH --partition batch_grad
 #SBATCH -o slurm/logs/slurm-%A-%x.out
 
-python main.py --epoch 1000 -b ./configs/hologram/holoLDM_cosine.yaml
+python main.py --text "a hamburger" --workspace trial -O
 
 exit 0
