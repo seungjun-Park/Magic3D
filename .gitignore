@@ -144,3 +144,4 @@ trial/
 *.iml
 densegridencoder
 tets/256_tets.npz
+main.sh
