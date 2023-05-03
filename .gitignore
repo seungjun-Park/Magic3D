@@ -134,10 +134,6 @@ slurm/
 trial/
 *.xml
 *.iml
-trial2/
-main.sh
 *.mtl
 *.obj
 *.mp4
-*.ariel-g4
-*.ariel-g5
