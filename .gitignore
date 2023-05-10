@@ -137,4 +137,5 @@ dmypy.json
 slurm/
 logs/
 *.txt
+*.sh
 
