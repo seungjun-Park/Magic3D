@@ -138,4 +138,5 @@ slurm/
 logs/
 *.txt
 *.sh
+.vscode/
 
