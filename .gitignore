@@ -129,14 +129,9 @@ dmypy.json
 .pyre/
 *.png
 *.pth
-*.txt
-slurm/
-trial/
 *.xml
 *.iml
 *.mtl
 *.obj
 *.mp4
-trial2/
-trial3/
-trial4/
+
