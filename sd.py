@@ -33,14 +33,14 @@ def seed_everything(seed):
     #torch.backends.cudnn.benchmark = True
 
 class StableDiffusion(nn.Module):
-    def __init__(self, device, sd_version='2.1', hf_key=None):
+    def __init__(self, device, sd_version='2.1', hf_key=None, use_custom=False):
         super().__init__()
 
         self.device = device
         self.sd_version = sd_version
 
         print(f'[INFO] loading stable diffusion...')
-        
+
         if hf_key is not None:
             print(f'[INFO] using hugging face custom model key: {hf_key}')
             model_key = hf_key
