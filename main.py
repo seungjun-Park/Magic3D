@@ -1,11 +1,28 @@
 import torch
 import argparse
 import sys
+import pytorch_lightning as pl
+from pytorch_lightning.trainer import Trainer
+from omegaconf import OmegaConf
 
 from nerf.provider import NeRFDataset
 from nerf.utils import *
+from utils import instantiate_from_config
 
-# torch.autograd.set_detect_anomaly(True)
+def get_parser(**parser_kwargs):
+    parser = argparse.ArgumentParser(**parser_kwargs)
+
+    parser.add_argument(
+        "-b",
+        "--base",
+        nargs="*",
+        metavar="base_config.yaml",
+        help='path to base configs. Loaded from left-to-right. '
+             'Parameters can be oeverwritten or added with command-line options of the form "--key value".',
+        default=list(),
+    )
+
+    return parser
 
 if __name__ == '__main__':
 

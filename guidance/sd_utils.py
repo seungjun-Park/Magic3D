@@ -161,13 +161,14 @@ class StableDiffusion(nn.Module):
 
         # w(t), sigma_t^2
         w = (1 - self.alphas[t])
-        grad = grad_scale * w * (noise_pred - noise)
+        variations = noise_pred - noise
+        grad = grad_scale * w * (variations)
         grad = torch.nan_to_num(grad)
 
         # since we omitted an item in grad, we need to use the custom function to specify the gradient
         loss = SpecifyGradient.apply(latents, grad)
 
-        return loss
+        return loss, variations
 
     @torch.no_grad()
     def produce_latents(self, text_embeddings, height=512, width=512, num_inference_steps=50, guidance_scale=7.5, latents=None):

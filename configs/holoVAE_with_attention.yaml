@@ -1,0 +1,78 @@
+module:
+  target: models.maigc3d.Magic3D
+  params:
+    text: a
+    negative: 0
+    O: a
+    O2: a
+    test: a
+    eval_interval: a
+    workspace: a
+    guidance: a
+    seed: a
+    image: a
+    known_view_interval: a
+    guidance_scale: a
+    save_mesh: a
+    mcubes_resolution: a
+    decimate_target: a
+    dmtet: a
+    tet_grid_size: a
+    init_ckpt: a
+
+    nerf_config:
+
+    diffusion_config:
+
+
+    gui_config:
+      gui: false
+      W: 800
+      H: 800
+      radius: 3
+      fovy: 60
+      light_theta: 60
+      light_phi: 0
+      mas_spp: 1
+
+data:
+  target: dataset.util.DataModuleFromConfig
+  params:
+    num_workers: 4
+    batch_size: 1
+    wrap: True
+    train:
+      target: dataset.Base
+      params:
+        data_path: '../data/landscape128'
+        format: '.png'
+        channel: 1
+        image_res: [256, 256]
+        homography_res: [128, 128]
+        vertical_flips: True
+        horizontal_flips: True
+
+logger:
+  target: pytorch_lightning.loggers.tensorboard.TensorBoardLogger
+  params:
+    save_dir: './logs'
+    name: 'holoVAE'
+
+checkpoints:
+  val_checkpoint:
+    target: pytorch_lightning.callbacks.ModelCheckpoint
+    params:
+      dirpath: './checkpoint/holoVAE'
+      filename: 'landscape_256_phases_19.5_mm_green_best_loss'
+      monitor: 'Loss'
+      mode: 'min'
+      save_top_k: 1
+
+  latest_checkpoint:
+    target: pytorch_lightning.callbacks.ModelCheckpoint
+    params:
+      dirpath: './checkpoint/holoVAE'
+      filename: 'landscape_256_phases_19.5_mm_green'
+      monitor: 'step'
+      mode: 'max'
+      save_top_k: 1

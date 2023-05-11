@@ -475,7 +475,7 @@ class Trainer(object):
                 pos_z = r * start_z + (1 - r) * end_z    
                 uncond_z = self.text_z['uncond']
                 text_z = torch.cat([uncond_z, pos_z], dim=0)
-                loss = self.guidance.train_step(text_z, pred_rgb, as_latent=as_latent, guidance_scale=self.opt.guidance_scale, grad_scale=self.opt.lambda_guidance)
+                loss, variations = self.guidance.train_step(text_z, pred_rgb, as_latent=as_latent, guidance_scale=self.opt.guidance_scale, grad_scale=self.opt.lambda_guidance)
 
             else: # zero123
                 polar = data['polar']
@@ -521,7 +521,7 @@ class Trainer(object):
             if self.opt.lambda_mesh_laplacian > 0:
                 loss = loss + self.opt.lambda_mesh_laplacian * outputs['lap_loss']
 
-        return pred_rgb, pred_depth, loss
+        return pred_rgb, pred_depth, loss, variations
     
     def post_train_step(self):
 
@@ -834,7 +834,7 @@ class Trainer(object):
             self.optimizer.zero_grad()
 
             with torch.cuda.amp.autocast(enabled=self.fp16):
-                pred_rgbs, pred_depths, loss = self.train_step(data)
+                pred_rgbs, pred_depths, loss, variations = self.train_step(data)
 
             # hooked grad clipping for RGB space
             if self.opt.grad_clip_rgb >= 0:
@@ -868,6 +868,7 @@ class Trainer(object):
                 if self.use_tensorboardX:
                     self.writer.add_scalar("train/loss", loss_val, self.global_step)
                     self.writer.add_scalar("train/lr", self.optimizer.param_groups[0]['lr'], self.global_step)
+                    self.writer.add_image('sds grad', variations[0], self.global_step)
 
                 if self.scheduler_update_every_step:
                     pbar.set_description(f"loss={loss_val:.4f} ({total_loss/self.local_step:.4f}), lr={self.optimizer.param_groups[0]['lr']:.6f}")
