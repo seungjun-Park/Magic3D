@@ -204,7 +204,9 @@ class NeRFTrainDataset(Dataset):
                  t_range=[0.02, 0.98],
                  H=256,
                  W=256,
-                 size=100):
+                 size=100,
+                 jitter_pose=None,
+                 uniform_sphere_rate=None):
         super().__init__()
 
         self.bound = bound
@@ -236,25 +238,24 @@ class NeRFTrainDataset(Dataset):
         self.near = near
         self.far = far  # infinite
 
-        # [debug] visualize poses
-        # poses, dirs, _, _, _ = rand_poses(100, self.device, radius_range=self.opt.radius_range, angle_overhead=self.opt.angle_overhead, angle_front=self.opt.angle_front, jitter=self.opt.jitter_pose, uniform_sphere_rate=1)
-        # visualize_poses(poses.detach().cpu().numpy(), dirs.detach().cpu().numpy())
+        self.jitter_pose = jitter_pose
+        self.uniform_sphere_rate = uniform_sphere_rate
 
     def __len__(self):
-        return 1
+        return self.size
 
     def __getitem__(self, index):
 
         B = len(index)  # always 1
 
         # random pose on the fly
-        poses, dirs, thetas, phis, radius = rand_poses(B, self.device, radius_range=self.opt.radius_range,
-                                                       theta_range=self.opt.theta_range,
-                                                       phi_range=self.opt.phi_range, return_dirs=True,
-                                                       angle_overhead=self.opt.angle_overhead,
-                                                       angle_front=self.opt.angle_front,
-                                                       jitter=self.opt.jitter_pose,
-                                                       uniform_sphere_rate=self.opt.uniform_sphere_rate)
+        poses, dirs, thetas, phis, radius = rand_poses(B, radius_range=self.radius_range,
+                                                       theta_range=self.theta_range,
+                                                       phi_range=self.phi_range, return_dirs=True,
+                                                       angle_overhead=self.angle_overhead,
+                                                       angle_front=self.angle_front,
+                                                       jitter=self.jitter_pose,
+                                                       uniform_sphere_rate=self.uniform_sphere_rate)
 
         # random focal
         fov = random.random() * (self.fovy_range[1] - self.fovy_range[0]) + self.fovy_range[0]
