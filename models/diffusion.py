@@ -3,8 +3,7 @@ from diffusers import AutoencoderKL, UNet2DConditionModel, PNDMScheduler, DDIMSc
 from diffusers.utils.import_utils import is_xformers_available
 from os.path import isfile
 
-# suppress partial model loading warning
-logging.set_verbosity_error()
+from typing import Any, Callable, Dict, List, Optional, Union
 
 import torch
 import torch.nn as nn
@@ -42,47 +41,19 @@ class UNet2DConditionOutput:
     sample: torch.HalfTensor  # Not sure how to check what unet_traced.pt contains, and user wants. HalfTensor or FloatTensor
 
 
-class StableDiffusion(nn.Module):
-    def __init__(self, device, fp16, vram_O, sd_version='2.1', hf_key=None, t_range=[0.02, 0.98]):
+class DiffusionWrapper(nn.Module):
+    def __init__(self,
+                 fp16=False,
+                 vram_O=False,
+                 model_id="stabilityai/stable-diffusion-2-1-base",
+                 t_range=[0.02, 0.98]):
         super().__init__()
 
-        self.device = device
-        self.sd_version = sd_version
-
-        print(f'[INFO] loading stable diffusion...')
-
-        if hf_key is not None:
-            print(f'[INFO] using hugging face custom model key: {hf_key}')
-            model_key = hf_key
-        elif self.sd_version == '2.1':
-            model_key = "stabilityai/stable-diffusion-2-1-base"
-        elif self.sd_version == '2.0':
-            model_key = "stabilityai/stable-diffusion-2-base"
-        elif self.sd_version == '1.5':
-            model_key = "runwayml/stable-diffusion-v1-5"
-        else:
-            raise ValueError(f'Stable-diffusion version {self.sd_version} not supported.')
-
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.precision_t = torch.float16 if fp16 else torch.float32
 
         # Create model
-        pipe = StableDiffusionPipeline.from_pretrained(model_key, torch_dtype=self.precision_t)
-
-        if isfile('./unet_traced.pt'):
-            # use jitted unet
-            unet_traced = torch.jit.load('./unet_traced.pt')
-
-            class TracedUNet(torch.nn.Module):
-                def __init__(self):
-                    super().__init__()
-                    self.in_channels = pipe.unet.in_channels
-                    self.device = pipe.unet.device
-
-                def forward(self, latent_model_input, t, encoder_hidden_states):
-                    sample = unet_traced(latent_model_input, t, encoder_hidden_states)[0]
-                    return UNet2DConditionOutput(sample=sample)
-
-            pipe.unet = TracedUNet()
+        pipe = StableDiffusionPipeline.from_pretrained(model_id, torch_dtype=self.precision_t)
 
         if vram_O:
             pipe.enable_sequential_cpu_offload()
@@ -98,7 +69,7 @@ class StableDiffusion(nn.Module):
         self.text_encoder = pipe.text_encoder
         self.unet = pipe.unet
 
-        self.scheduler = DDIMScheduler.from_pretrained(model_key, subfolder="scheduler", torch_dtype=self.precision_t)
+        self.scheduler = pipe.schedular
 
         self.num_train_timesteps = self.scheduler.config.num_train_timesteps
         self.min_step = int(self.num_train_timesteps * t_range[0])
@@ -107,146 +78,92 @@ class StableDiffusion(nn.Module):
 
         print(f'[INFO] loaded stable diffusion!')
 
-    @torch.no_grad()
-    def get_text_embeds(self, prompt):
-        # prompt, negative_prompt: [str]
+    def forward(self,
+                pred_rgb: torch.Tensor,
+                prompt: Union[str, List[str]] = None,
+                height: Optional[int] = None,
+                width: Optional[int] = None,
+                guidance_scale: float = 7.5,
+                negative_prompt: Optional[Union[str, List[str]]] = None,
+                num_images_per_prompt: Optional[int] = 1,
+                eta: float = 0.0,
+                generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
+                prompt_embeds: Optional[torch.FloatTensor] = None,
+                negative_prompt_embeds: Optional[torch.FloatTensor] = None,
+                return_dict: bool = True,
+                callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
+                callback_steps: int = 1,
+                cross_attention_kwargs: Optional[Dict[str, Any]] = None,
+        ):
 
-        # positive
-        inputs = self.tokenizer(prompt, padding='max_length', max_length=self.tokenizer.model_max_length,
-                                return_tensors='pt')
-        embeddings = self.text_encoder(inputs.input_ids.to(self.device))[0]
+        outputs = dict()
 
-        return embeddings
+        do_clssifier_free_guidance = guidance_scale > 1.0
 
-    def train_step(self, text_embeddings, pred_rgb, guidance_scale=100, as_latent=False, grad_scale=1):
+        prompt_embedd = pipe._encode_prompt(
+            prompt,
+            self.device,
+            num_images_per_prompt,
+            do_classifier_free_guidance,
+            negative_prompt,
+            prompt_embeds=prompt_embeds,
+            negative_prompt_embeds=negative_prompt_embeds
+        )
 
-        if as_latent:
-            latents = F.interpolate(pred_rgb, (64, 64), mode='bilinear', align_corners=False) * 2 - 1
-        else:
-            # interp to 512x512 to be fed into vae.
-            pred_rgb_512 = F.interpolate(pred_rgb, (512, 512), mode='bilinear', align_corners=False)
-            # encode image into latents with vae, requires grad!
-            latents = self.encode_imgs(pred_rgb_512)
+        # interp to 512x512 to be fed into vae.
+        pred_rgb_resize = F.interpolate(pred_rgb, (height, width), mode='bilinear', align_corners=False)
+        outputs.update({'pred_rgb': pred_rgb_resize})
+        # encode image into latents with vae, requires grad!
+        latents = self.encode_imgs(pred_rgb_resize)
+        outputs.update({'latents': latents})
 
         # timestep ~ U(0.02, 0.98) to avoid very high/low noise level
-        t = torch.randint(self.min_step, self.max_step + 1, [1], dtype=torch.long, device=self.device)
+        t = torch.randint(self.min_step, self.max_step + 1, (1, ), device=self.device)
 
         # predict the noise residual with unet, NO grad!
         with torch.no_grad():
-            # add noise
             noise = torch.randn_like(latents)
             latents_noisy = self.scheduler.add_noise(latents, noise, t)
-            # pred noise
-            latent_model_input = torch.cat([latents_noisy] * 2)
-            # Save input tensors for UNet
-            # torch.save(latent_model_input, "train_latent_model_input.pt")
-            # torch.save(t, "train_t.pt")
-            # torch.save(text_embeddings, "train_text_embeddings.pt")
-            noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings).sample
+            outputs.update({'latenst_noisy': latents_noisy})
+            latent_model_input = torch.cat([latents_noisy] * 2) if do_clssifier_free_guidance else latents
+            latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
+            noise_pred = self.unet(
+                latent_model_input,
+                t,
+                encoder_hidden_states=prompt_embedding,
+                cross_attention_kwargs=cross_attention_kwargs
+            ).sample
 
         # perform guidance (high scale from paper!)
-        noise_pred_uncond, noise_pred_pos = noise_pred.chunk(2)
+        if do_clssifier_free_guidance:
+            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+            noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
-        noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_pos - noise_pred_uncond)
-
-        # import kiui
-        # latents_tmp = torch.randn((1, 4, 64, 64), device=self.device)
-        # latents_tmp = latents_tmp.detach()
-        # kiui.lo(latents_tmp)
-        # self.scheduler.set_timesteps(30)
-        # for i, t in enumerate(self.scheduler.timesteps):
-        #     latent_model_input = torch.cat([latents_tmp] * 3)
-        #     noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings)['sample']
-        #     noise_pred_uncond, noise_pred_pos = noise_pred.chunk(2)
-        #     noise_pred = noise_pred_uncond + 10 * (noise_pred_pos - noise_pred_uncond)
-        #     latents_tmp = self.scheduler.step(noise_pred, t, latents_tmp)['prev_sample']
-        # imgs = self.decode_latents(latents_tmp)
-        # kiui.vis.plot_image(imgs)
+        outputs.update({'noise_pred': noise_pred})
 
         # w(t), sigma_t^2
         w = (1 - self.alphas[t])
-        variations = noise_pred - noise
-        grad = grad_scale * w * (variations)
-        grad = torch.nan_to_num(grad)
+        difference = noise_pred - noise
+        outputs.update({'difference': difference})
+
+        loss = grad_scale * w * (difference)
+        loss = torch.nan_to_num(loss)
 
         # since we omitted an item in grad, we need to use the custom function to specify the gradient
-        loss = SpecifyGradient.apply(latents, grad)
+        #loss = SpecifyGradient.apply(latents, grad) use autograd?
 
-        return loss, variations
+        if return_dict:
+            return loss, outputs
 
-    @torch.no_grad()
-    def produce_latents(self, text_embeddings, height=512, width=512, num_inference_steps=50, guidance_scale=7.5,
-                        latents=None):
-
-        if latents is None:
-            latents = torch.randn((text_embeddings.shape[0] // 2, self.unet.in_channels, height // 8, width // 8),
-                                  device=self.device)
-
-        self.scheduler.set_timesteps(num_inference_steps)
-
-        for i, t in enumerate(self.scheduler.timesteps):
-            # expand the latents if we are doing classifier-free guidance to avoid doing two forward passes.
-            latent_model_input = torch.cat([latents] * 2)
-
-            # Save input tensors for UNet
-            # torch.save(latent_model_input, "produce_latents_latent_model_input.pt")
-            # torch.save(t, "produce_latents_t.pt")
-            # torch.save(text_embeddings, "produce_latents_text_embeddings.pt")
-            # predict the noise residual
-            noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings)['sample']
-
-            # perform guidance
-            noise_pred_uncond, noise_pred_cond = noise_pred.chunk(2)
-            noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
-
-            # compute the previous noisy sample x_t -> x_t-1
-            latents = self.scheduler.step(noise_pred, t, latents)['prev_sample']
-
-        return latents
-
-    def decode_latents(self, latents):
-
-        latents = 1 / self.vae.config.scaling_factor * latents
-
-        imgs = self.vae.decode(latents).sample
-        imgs = (imgs / 2 + 0.5).clamp(0, 1)
-
-        return imgs
+        else:
+            return loss
 
     def encode_imgs(self, imgs):
         # imgs: [B, 3, H, W]
 
-        imgs = 2 * imgs - 1
+        imgs = 2 * imgs - 1 #?? why mul 2?
 
         posterior = self.vae.encode(imgs).latent_dist
         latents = posterior.sample() * self.vae.config.scaling_factor
 
         return latents
-
-    def prompt_to_img(self, prompts, negative_prompts='', height=512, width=512, num_inference_steps=50,
-                      guidance_scale=7.5, latents=None):
-
-        if isinstance(prompts, str):
-            prompts = [prompts]
-
-        if isinstance(negative_prompts, str):
-            negative_prompts = [negative_prompts]
-
-        # Prompts -> text embeds
-        pos_embeds = self.get_text_embeds(prompts)  # [1, 77, 768]
-        neg_embeds = self.get_text_embeds(negative_prompts)
-        text_embeds = torch.cat([neg_embeds, pos_embeds], dim=0)  # [2, 77, 768]
-
-        # Text embeds -> img latents
-        latents = self.produce_latents(text_embeds, height=height, width=width, latents=latents,
-                                       num_inference_steps=num_inference_steps,
-                                       guidance_scale=guidance_scale)  # [1, 4, 64, 64]
-
-        # Img latents -> imgs
-        imgs = self.decode_latents(latents)  # [1, 3, 512, 512]
-
-        # Img to Numpy
-        imgs = imgs.detach().cpu().permute(0, 2, 3, 1).numpy()
-        imgs = (imgs * 255).round().astype('uint8')
-
-        return imgs

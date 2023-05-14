@@ -19,7 +19,7 @@ class SpecifyGradient(torch.autograd.Function):
     @custom_fwd
     def forward(ctx, input_tensor, gt_grad):
         ctx.save_for_backward(gt_grad)
-        # we return a dummy value 1, which will be scaled by amp's scaler so we get the scale in backward.
+        # we return a dummy value 1, which will be scaled by amp's scaler, so we get the scale in backward.
         return torch.ones([1], device=input_tensor.device, dtype=input_tensor.dtype)
 
     @staticmethod
@@ -168,7 +168,7 @@ class StableDiffusion(nn.Module):
         # since we omitted an item in grad, we need to use the custom function to specify the gradient
         loss = SpecifyGradient.apply(latents, grad)
 
-        return loss, variations
+        return loss
 
     @torch.no_grad()
     def produce_latents(self, text_embeddings, height=512, width=512, num_inference_steps=50, guidance_scale=7.5, latents=None):
