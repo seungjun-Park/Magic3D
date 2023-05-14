@@ -16,6 +16,13 @@ class Magic3D(pl.LightningModule):
                  nerf_config,
                  diffusion_config,
                  text,
+                 negative,
+                 O,
+                 O2,
+                 guidance_scale,
+                 save_mesh,
+                 mcubes_resolution=256,
+                 decimate_target=5e4,
                  ema_decay=None,  # if use EMA, set the decay
                  fp16=False,  # amp optimize level
                  eval_interval=1,  # eval once every $ epoch
@@ -33,6 +40,9 @@ class Magic3D(pl.LightningModule):
 
         self.nerf = instantiate_from_config(nerf_config)
         self.diffusion = instantiate_from_config(diffusion_config)
+
+        self.text = text
+        self.negative = negative
 
         # text prompt
         self.diffusion.eval()
@@ -97,46 +107,8 @@ class Magic3D(pl.LightningModule):
             self.text_z['uncond'] = self.diffusion.get_text_embeds([negative])
 
         for d in ['front', 'side', 'back']:
-            self.text_z[d] = self.guidance.get_text_embeds([f"{self.opt.text}, {d} view"])
+            self.text_z[d] = self.diffusion.get_text_embeds([f"{self.opt.text}, {d} view"])
 
-        if self.opt.image is not None:
-
-            h = int(self.opt.known_view_scale * self.opt.h)
-            w = int(self.opt.known_view_scale * self.opt.w)
-
-            # load processed image
-            rgba = cv2.cvtColor(cv2.imread(self.opt.image, cv2.IMREAD_UNCHANGED), cv2.COLOR_BGRA2RGBA)
-            rgba_hw = cv2.resize(rgba, (w, h), interpolation=cv2.INTER_AREA).astype(np.float32) / 255
-            rgb_hw = rgba_hw[..., :3] * rgba_hw[..., 3:] + (1 - rgba_hw[..., 3:])
-            self.rgb = torch.from_numpy(rgb_hw).permute(2, 0, 1).unsqueeze(0).contiguous().to(self.device)
-            self.mask = torch.from_numpy(rgba_hw[..., 3] > 0.5).to(self.device)
-            print(f'[INFO] dataset: load image prompt {self.opt.image} {self.rgb.shape}')
-
-            # load depth
-            depth_path = self.opt.image.replace('_rgba.png', '_depth.png')
-            depth = cv2.imread(depth_path, cv2.IMREAD_UNCHANGED)
-            depth = cv2.resize(depth, (w, h), interpolation=cv2.INTER_AREA)
-            self.depth = torch.from_numpy(depth.astype(np.float32) / 255).to(self.device)
-            print(f'[INFO] dataset: load depth prompt {depth_path} {self.depth.shape}')
-
-            # load normal
-            normal_path = self.opt.image.replace('_rgba.png', '_normal.png')
-            normal = cv2.imread(normal_path, cv2.IMREAD_UNCHANGED)
-            normal = cv2.resize(normal, (w, h), interpolation=cv2.INTER_AREA)
-            self.normal = torch.from_numpy(normal.astype(np.float32) / 255).to(self.device)
-            print(f'[INFO] dataset: load normal prompt {normal_path} {self.normal.shape}')
-
-            # encode image_z for zero123
-            if self.opt.guidance == 'zero123':
-                rgba_256 = cv2.resize(rgba, (256, 256), interpolation=cv2.INTER_AREA).astype(np.float32) / 255
-                rgb_256 = rgba_256[..., :3] * rgba_256[..., 3:] + (1 - rgba_256[..., 3:])
-                rgb_256 = torch.from_numpy(rgb_256).permute(2, 0, 1).unsqueeze(0).contiguous().to(self.device)
-                self.image_z = self.guidance.get_img_embeds(rgb_256)
-            else:
-                self.image_z = None
-
-        else:
-            self.image_z = None
 
     def training_step(self, batch, batch_idx):
         # update grid every 16 steps
@@ -144,12 +116,8 @@ class Magic3D(pl.LightningModule):
             with torch.cuda.amp.autocast(enabled=self.fp16):
                 self.model.update_extra_state()
 
-        self.local_step += 1
-
-        self.optimizer.zero_grad()
-
         with torch.cuda.amp.autocast(enabled=self.fp16):
-            pred_rgbs, pred_depths, loss, variations = self.train_step(batch)
+            pred_rgbs, pred_depths, loss, variations = self(batch)
 
         # hooked grad clipping for RGB space
         if self.opt.grad_clip_rgb >= 0:
@@ -187,14 +155,6 @@ class Magic3D(pl.LightningModule):
             self.ema.update()
 
     def forward(self, data):
-
-        # perform RGBD loss instead of SDS if is image-conditioned
-        do_rgbd_loss = self.opt.image is not None and (self.global_step % self.opt.known_view_interval == 0)
-
-        # override random camera with fixed known camera
-        if do_rgbd_loss:
-            data = self.default_view_data
-
         # progressively relaxing view range
         if self.opt.progressive_view:
             r = min(1.0, 0.2 + self.global_step / (0.5 * self.opt.iters))
@@ -218,20 +178,7 @@ class Magic3D(pl.LightningModule):
         B, N = rays_o.shape[:2]
         H, W = data['H'], data['W']
 
-        if do_rgbd_loss:
-            ambient_ratio = 1.0
-            shading = 'ambient'
-            as_latent = False
-            binarize = False
-            bg_color = torch.rand((B * N, 3), device=rays_o.device)
-
-            # add camera noise to avoid grid-like artifect
-            if self.opt.known_view_noise_scale > 0:
-                noise_scale = self.opt.known_view_noise_scale  # * (1 - self.global_step / self.opt.iters)
-                rays_o = rays_o + torch.randn(3, device=self.device) * noise_scale
-                rays_d = rays_d + torch.randn(3, device=self.device) * noise_scale
-
-        elif self.global_step < self.opt.warmup_iters:
+        if self.global_step < self.opt.warmup_iters:
             ambient_ratio = 1.0
             shading = 'normal'
             as_latent = True
@@ -276,78 +223,30 @@ class Magic3D(pl.LightningModule):
         else:
             pred_rgb = outputs['image'].reshape(B, H, W, 3).permute(0, 3, 1, 2).contiguous()  # [1, 3, H, W]
 
-        # known view loss
-        if do_rgbd_loss:
-            gt_mask = self.mask  # [H, W]
-            gt_rgb = self.rgb  # [3, H, W]
+        # interpolate text_z
+        azimuth = data['azimuth']  # [-180, 180]
 
-            # color loss
-            gt_rgb = gt_rgb * gt_mask.float() + bg_color.reshape(H, W, 3).permute(2, 0, 1).contiguous() * (
-                        1 - gt_mask.float())
-            loss = self.opt.lambda_rgb * F.mse_loss(pred_rgb, gt_rgb)
-
-            # mask loss
-            loss = loss + self.opt.lambda_mask * F.mse_loss(pred_mask[0, 0], gt_mask.float())
-
-            # normal loss
-            if self.opt.lambda_normal > 0 and 'normal_image' in outputs:
-                valid_gt_normal = 1 - 2 * self.normal[gt_mask]  # [B, 3]
-                valid_pred_normal = 2 * pred_normal.squeeze()[gt_mask] - 1  # [B, 3]
-
-                lambda_normal = self.opt.lambda_normal * min(1, self.global_step / self.opt.iters)
-                loss = loss + lambda_normal * (1 - F.cosine_similarity(valid_pred_normal, valid_gt_normal).mean())
-
-            # relative depth loss
-            if self.opt.lambda_depth > 0:
-                valid_gt_depth = self.depth[gt_mask].unsqueeze(1)  # [B, 1]
-                valid_pred_depth = pred_depth.squeeze()[gt_mask].unsqueeze(1)  # [B, 1]
-                # scale-invariant
-                with torch.no_grad():
-                    A = torch.cat([valid_gt_depth, torch.ones_like(valid_gt_depth)], dim=-1)  # [B, 2]
-                    X = torch.linalg.lstsq(A, valid_pred_depth).solution  # [2, 1]
-                    valid_gt_depth = A @ X  # [B, 1]
-                lambda_depth = self.opt.lambda_depth * min(1, self.global_step / self.opt.iters)
-                loss = loss + lambda_depth * F.mse_loss(valid_pred_depth, valid_gt_depth)
-
-        # novel view loss
+        if azimuth >= -90 and azimuth < 90:
+            if azimuth >= 0:
+                r = 1 - azimuth / 90
+            else:
+                r = 1 + azimuth / 90
+            start_z = self.text_z['front']
+            end_z = self.text_z['side']
         else:
+            if azimuth >= 0:
+                r = 1 - (azimuth - 90) / 90
+            else:
+                r = 1 + (azimuth + 90) / 90
+            start_z = self.text_z['side']
+            end_z = self.text_z['back']
 
-            if self.opt.guidance == 'stable-diffusion':
-                # interpolate text_z
-                azimuth = data['azimuth']  # [-180, 180]
-
-                if azimuth >= -90 and azimuth < 90:
-                    if azimuth >= 0:
-                        r = 1 - azimuth / 90
-                    else:
-                        r = 1 + azimuth / 90
-                    start_z = self.text_z['front']
-                    end_z = self.text_z['side']
-                else:
-                    if azimuth >= 0:
-                        r = 1 - (azimuth - 90) / 90
-                    else:
-                        r = 1 + (azimuth + 90) / 90
-                    start_z = self.text_z['side']
-                    end_z = self.text_z['back']
-
-                pos_z = r * start_z + (1 - r) * end_z
-                uncond_z = self.text_z['uncond']
-                text_z = torch.cat([uncond_z, pos_z], dim=0)
-                loss, variations = self.guidance.train_step(text_z, pred_rgb, as_latent=as_latent,
-                                                            guidance_scale=self.opt.guidance_scale,
-                                                            grad_scale=self.opt.lambda_guidance)
-
-            else:  # zero123
-                polar = data['polar']
-                azimuth = data['azimuth']
-                radius = data['radius']
-
-                # adjust SDS scale based on how far the novel view is from the known view
-                lambda_guidance = (abs(azimuth) / 180) * self.opt.lambda_guidance
-
-                loss = self.guidance.train_step(self.image_z, pred_rgb, polar, azimuth, radius, as_latent=as_latent,
-                                                guidance_scale=self.opt.guidance_scale, grad_scale=lambda_guidance)
+        pos_z = r * start_z + (1 - r) * end_z
+        uncond_z = self.text_z['uncond']
+        text_z = torch.cat([uncond_z, pos_z], dim=0)
+        loss, variations = self.guidance.train_step(text_z, pred_rgb, as_latent=as_latent,
+                                                    guidance_scale=self.opt.guidance_scale,
+                                                    grad_scale=self.opt.lambda_guidance)
 
         # regularizations
         if not self.opt.dmtet:
@@ -398,82 +297,59 @@ class Magic3D(pl.LightningModule):
             self.ema.store()
             self.ema.copy_to()
 
-        if self.local_rank == 0:
-            pbar = tqdm.tqdm(total=len(loader) * loader.batch_size,
-                             bar_format='{desc}: {percentage:3.0f}% {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
+            self.local_step += 1
 
-        with torch.no_grad():
-            self.local_step = 0
+            with torch.cuda.amp.autocast(enabled=self.fp16):
+                preds, preds_depth, loss = self.eval_step(data)
 
-            for data in loader:
-                self.local_step += 1
+            # all_gather/reduce the statistics (NCCL only support all_*)
+            if self.world_size > 1:
+                dist.all_reduce(loss, op=dist.ReduceOp.SUM)
+                loss = loss / self.world_size
 
-                with torch.cuda.amp.autocast(enabled=self.fp16):
-                    preds, preds_depth, loss = self.eval_step(data)
+                preds_list = [torch.zeros_like(preds).to(self.device) for _ in
+                              range(self.world_size)]  # [[B, ...], [B, ...], ...]
+                dist.all_gather(preds_list, preds)
+                preds = torch.cat(preds_list, dim=0)
 
-                # all_gather/reduce the statistics (NCCL only support all_*)
-                if self.world_size > 1:
-                    dist.all_reduce(loss, op=dist.ReduceOp.SUM)
-                    loss = loss / self.world_size
+                preds_depth_list = [torch.zeros_like(preds_depth).to(self.device) for _ in
+                                    range(self.world_size)]  # [[B, ...], [B, ...], ...]
+                dist.all_gather(preds_depth_list, preds_depth)
+                preds_depth = torch.cat(preds_depth_list, dim=0)
 
-                    preds_list = [torch.zeros_like(preds).to(self.device) for _ in
-                                  range(self.world_size)]  # [[B, ...], [B, ...], ...]
-                    dist.all_gather(preds_list, preds)
-                    preds = torch.cat(preds_list, dim=0)
+            loss_val = loss.item()
+            total_loss += loss_val
 
-                    preds_depth_list = [torch.zeros_like(preds_depth).to(self.device) for _ in
-                                        range(self.world_size)]  # [[B, ...], [B, ...], ...]
-                    dist.all_gather(preds_depth_list, preds_depth)
-                    preds_depth = torch.cat(preds_depth_list, dim=0)
+            # only rank = 0 will perform evaluation.
+            if self.local_rank == 0:
+                # save image
+                save_path = os.path.join(self.workspace, 'validation', f'{name}_{self.local_step:04d}_rgb.png')
+                save_path_depth = os.path.join(self.workspace, 'validation',
+                                               f'{name}_{self.local_step:04d}_depth.png')
 
-                loss_val = loss.item()
-                total_loss += loss_val
+                # self.log(f"==> Saving validation image to {save_path}")
+                os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
-                # only rank = 0 will perform evaluation.
-                if self.local_rank == 0:
-                    # save image
-                    save_path = os.path.join(self.workspace, 'validation', f'{name}_{self.local_step:04d}_rgb.png')
-                    save_path_depth = os.path.join(self.workspace, 'validation',
-                                                   f'{name}_{self.local_step:04d}_depth.png')
+                pred = preds[0].detach().cpu().numpy()
+                pred = (pred * 255).astype(np.uint8)
 
-                    # self.log(f"==> Saving validation image to {save_path}")
-                    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                pred_depth = preds_depth[0].detach().cpu().numpy()
+                pred_depth = (pred_depth - pred_depth.min()) / (pred_depth.max() - pred_depth.min() + 1e-6)
+                pred_depth = (pred_depth * 255).astype(np.uint8)
 
-                    pred = preds[0].detach().cpu().numpy()
-                    pred = (pred * 255).astype(np.uint8)
+                cv2.imwrite(save_path, cv2.cvtColor(pred, cv2.COLOR_RGB2BGR))
+                cv2.imwrite(save_path_depth, pred_depth)
 
-                    pred_depth = preds_depth[0].detach().cpu().numpy()
-                    pred_depth = (pred_depth - pred_depth.min()) / (pred_depth.max() - pred_depth.min() + 1e-6)
-                    pred_depth = (pred_depth * 255).astype(np.uint8)
-
-                    cv2.imwrite(save_path, cv2.cvtColor(pred, cv2.COLOR_RGB2BGR))
-                    cv2.imwrite(save_path_depth, pred_depth)
-
-                    pbar.set_description(f"loss={loss_val:.4f} ({total_loss / self.local_step:.4f})")
-                    pbar.update(loader.batch_size)
+                pbar.set_description(f"loss={loss_val:.4f} ({total_loss / self.local_step:.4f})")
+                pbar.update(loader.batch_size)
 
         average_loss = total_loss / self.local_step
         self.stats["valid_loss"].append(average_loss)
 
-        if self.local_rank == 0:
-            pbar.close()
-            if not self.use_loss_as_metric and len(self.metrics) > 0:
-                result = self.metrics[0].measure()
-                self.stats["results"].append(
-                    result if self.best_mode == 'min' else - result)  # if max mode, use -result
-            else:
-                self.stats["results"].append(average_loss)  # if no metric, choose best by min loss
-
-            for metric in self.metrics:
-                self.log(metric.report(), style="blue")
-                if self.use_tensorboardX:
-                    metric.write(self.writer, self.epoch, prefix="evaluate")
-                metric.clear()
 
         if self.ema is not None:
             self.ema.restore()
 
-        self.log(f"++> Evaluate epoch {self.epoch} Finished.")
 
 
     def eval_step(self, data):

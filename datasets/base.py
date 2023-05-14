@@ -404,4 +404,12 @@ class NeRFValidationDataset(Dataset):
             'radius': delta_radius,
         }
 
-        return data
+        return (self.H,
+                self.W  ,
+                rays['rays_o'],
+                rays['rays_d'],
+                dirs,
+                mvp,
+                delta_polar,
+                delta_azimuth,
+                delta_radius)
