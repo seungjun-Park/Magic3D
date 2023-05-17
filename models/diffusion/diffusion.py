@@ -43,37 +43,48 @@ class UNet2DConditionOutput:
 
 class DiffusionWrapper(nn.Module):
     def __init__(self,
+                 device=None,
+                 grad_scale=1.0,
                  fp16=False,
-                 vram_O=False,
                  model_id="stabilityai/stable-diffusion-2-1-base",
-                 t_range=[0.02, 0.98]):
+                 t_range=[0.02, 0.5],
+                 vram_O=False):
         super().__init__()
 
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.precision_t = torch.float16 if fp16 else torch.float32
+        if device is None:
+            self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+        else:
+            self.device = device
+
+        self.precision = torch.float16 if fp16 else torch.float32
+        self.grad_scale = grad_scale
 
         # Create model
-        pipe = StableDiffusionPipeline.from_pretrained(model_id, torch_dtype=self.precision_t)
+        self.model = StableDiffusionPipeline.from_pretrained(model_id, torch_dtype=self.precision)
+        self.t_range = t_range
 
         if vram_O:
-            pipe.enable_sequential_cpu_offload()
-            pipe.enable_vae_slicing()
-            pipe.unet.to(memory_format=torch.channels_last)
-            pipe.enable_attention_slicing(1)
+            self.model.enable_sequential_cpu_offload()
+            self.model.enable_vae_slicing()
+            self.model.unet.to(memory_format=torch.channels_last)
+            self.model.enable_attention_slicing(1)
             # pipe.enable_model_cpu_offload()
         else:
-            pipe.to(device)
+            self.model.to(self.device)
 
-        self.vae = pipe.vae
-        self.tokenizer = pipe.tokenizer
-        self.text_encoder = pipe.text_encoder
-        self.unet = pipe.unet
+        self.model.eval()
 
-        self.scheduler = pipe.schedular
+        self.vae = self.model.vae
+        self.tokenizer = self.model.tokenizer
+        self.text_encoder = self.model.text_encoder
+        self.unet = self.model.unet
 
-        self.num_train_timesteps = self.scheduler.config.num_train_timesteps
-        self.min_step = int(self.num_train_timesteps * t_range[0])
-        self.max_step = int(self.num_train_timesteps * t_range[1])
+        self.scheduler = self.model.schedular
+
+        self.num_timesteps = self.scheduler.config.num_train_timesteps
+        self.min_step = int(self.num_timesteps * self.t_range[0])
+        self.max_step = int(self.num_timesteps * self.t_range[1])
         self.alphas = self.scheduler.alphas_cumprod.to(self.device)  # for convenience
 
         print(f'[INFO] loaded stable diffusion!')
@@ -100,11 +111,11 @@ class DiffusionWrapper(nn.Module):
 
         do_clssifier_free_guidance = guidance_scale > 1.0
 
-        prompt_embedd = pipe._encode_prompt(
+        prompt_embedding = self.model._encode_prompt(
             prompt,
             self.device,
             num_images_per_prompt,
-            do_classifier_free_guidance,
+            do_clssifier_free_guidance,
             negative_prompt,
             prompt_embeds=prompt_embeds,
             negative_prompt_embeds=negative_prompt_embeds
@@ -146,7 +157,7 @@ class DiffusionWrapper(nn.Module):
         difference = noise_pred - noise
         outputs.update({'difference': difference})
 
-        loss = grad_scale * w * (difference)
+        loss = self.grad_scale * w * (difference)
         loss = torch.nan_to_num(loss)
 
         # since we omitted an item in grad, we need to use the custom function to specify the gradient

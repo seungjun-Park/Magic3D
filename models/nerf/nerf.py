@@ -16,6 +16,7 @@ from meshutils import decimate_mesh, clean_mesh, poisson_mesh_reconstruction
 from models.utils import custom_meshgrid, safe_normalize
 from modules import ResBlock, MLP, BasicBlock
 from encoding import get_encoder
+from activation import trunc_exp, biased_softplus
 
 
 def sample_pdf(bins, weights, n_samples, det=False):
