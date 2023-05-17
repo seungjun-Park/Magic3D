@@ -117,6 +117,7 @@ def shard_rays(rays, batch_shape=1, multihost=True):
   # else:
   #   batch_shape = (jax.local_device_count(), -1)
 
+
   return (np.reshape(ray_origins, batch_shape + ray_origins.shape[-1:]),
           np.reshape(ray_dirs, batch_shape + ray_dirs.shape[-1:]),
           np.reshape(ray_diffs, batch_shape + ray_diffs.shape[-1:]))

@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 from torch.utils.data import Dataset
 import datasets.scene as scene
@@ -31,7 +32,7 @@ class DreamfieldDataset(Dataset):
         rays = self.camera_ray_batch_base(pose, focal_mult)
         rays_in = self.shard_rays(rays)
 
-        return
+        return rays_in
 
     def shard_rays(self, rays):
         return scene.shard_rays(rays)
