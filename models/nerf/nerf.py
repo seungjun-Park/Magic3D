@@ -13,7 +13,7 @@ import nvdiffrast.torch as dr
 import mcubes
 import raymarching
 from meshutils import decimate_mesh, clean_mesh, poisson_mesh_reconstruction
-from .utils import custom_meshgrid, safe_normalize
+from models.utils import custom_meshgrid, safe_normalize
 from modules import ResBlock, MLP, BasicBlock
 from encoding import get_encoder
 
