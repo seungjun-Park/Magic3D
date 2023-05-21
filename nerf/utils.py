@@ -274,6 +274,7 @@ class Trainer(object):
 
             for d in ['front', 'side', 'back']:
                 self.text_z[d] = self.guidance.get_text_embeds([f"{self.opt.text}, {d} view"])
+                self.text_z[f'uncond_{d}'] = self.guidance.get_text_embeds(f'{self.opt.negative}, {d} view')
         else:
             self.text_z = None
         
@@ -464,6 +465,7 @@ class Trainer(object):
                         r = 1 + azimuth / 90
                     start_z = self.text_z['front']
                     end_z = self.text_z['side']
+                    uncond_z = self.text_z['uncond_back']
                 else:
                     if azimuth >= 0:
                         r = 1 - (azimuth - 90) / 90
@@ -471,9 +473,9 @@ class Trainer(object):
                         r = 1 + (azimuth + 90) / 90
                     start_z = self.text_z['side']
                     end_z = self.text_z['back']
+                    uncond_z = self.text_z['uncond_front']
 
-                pos_z = r * start_z + (1 - r) * end_z    
-                uncond_z = self.text_z['uncond']
+                pos_z = r * start_z + (1 - r) * end_z
                 text_z = torch.cat([uncond_z, pos_z], dim=0)
                 loss = self.guidance.train_step(text_z, pred_rgb, as_latent=as_latent, guidance_scale=self.opt.guidance_scale, grad_scale=self.opt.lambda_guidance)
 
