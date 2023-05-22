@@ -273,14 +273,13 @@ class Trainer(object):
             self.text_z['uncond'] = self.guidance.get_text_embeds([self.opt.negative])
 
             for d in ['front', 'side', 'back']:
-                if d == 'front':
-                    self.text_z[d] = self.guidance.get_text_embeds([f"{self.opt.text}, {d} view, high resolution face"])
-                else:
-                    self.text_z[d] = self.guidance.get_text_embeds([f"{self.opt.text}, {d} view"])
                 if d == 'back':
-                    self.text_z[f'uncond_{d}'] = self.guidance.get_text_embeds([f'{self.opt.negative}, {d} view, high resolution face'])
+                    self.text_z[d] = self.guidance.get_text_embeds([f"{self.opt.text}, {d} view"])
+                    self.text_z[f'uncond_{d}'] = self.guidance.get_text_embeds([f'{self.opt.negative}, {d} view, high quality face'])
                 else:
+                    self.text_z[d] = self.guidance.get_text_embeds([f"{self.opt.text}, {d} view, high quality face of {d} view"])
                     self.text_z[f'uncond_{d}'] = self.guidance.get_text_embeds([f'{self.opt.negative}, {d} view'])
+
         else:
             self.text_z = None
         
