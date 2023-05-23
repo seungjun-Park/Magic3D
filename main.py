@@ -39,7 +39,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--image', default=None, help="image prompt")
     parser.add_argument('--known_view_interval', type=int, default=2, help="train default view with RGB loss every & iters, only valid if --image is not None.")
-    parser.add_argument('--guidance_scale', type=float, default=100, help="diffusion model classifier-free guidance scale")
+    parser.add_argument('--guidance_scale', type=float, default=7.5, help="diffusion model classifier-free guidance scale")
 
     parser.add_argument('--save_mesh', action='store_true', help="export an obj mesh with texture")
     parser.add_argument('--mcubes_resolution', type=int, default=256, help="mcubes resolution for extracting mesh")
@@ -106,7 +106,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--angle_overhead', type=float, default=30, help="[0, angle_overhead] is the overhead region")
     parser.add_argument('--angle_front', type=float, default=60, help="[0, angle_front] is the front region, [180, 180+angle_front] the back region, otherwise the side region.")
-    parser.add_argument('--t_range', type=float, nargs='*', default=[0.02, 0.98], help="stable diffusion time steps range")
+    parser.add_argument('--t_range', type=float, nargs='*', default=[0.4, 0.6], help="stable diffusion time steps range")
 
     ### regularizations
     parser.add_argument('--lambda_entropy', type=float, default=1e-3, help="loss scale for alpha entropy")

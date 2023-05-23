@@ -31,12 +31,10 @@ class Magic3D(pl.LightningModule):
                  ):
         super().__init__()
         self.name = name
-        self.workspace = workspace
         self.ema_decay = ema_decay
         self.fp16 = fp16
         self.max_keep_ckpt = max_keep_ckpt
         self.eval_interval = eval_interval
-
 
         self.nerf = instantiate_from_config(nerf_config)
         self.diffusion = instantiate_from_config(diffusion_config)
@@ -57,58 +55,23 @@ class Magic3D(pl.LightningModule):
 
         self.scaler = torch.cuda.amp.GradScaler(enabled=self.fp16)
 
-        # variable init
         self.epoch = 0
-
-        # workspace prepare
-        self.log_ptr = None
-        if self.workspace is not None:
-            os.makedirs(self.workspace, exist_ok=True)
-            self.log_path = os.path.join(workspace, f"log_{self.name}.txt")
-            self.log_ptr = open(self.log_path, "a+")
-
-            self.ckpt_path = os.path.join(self.workspace, 'checkpoints')
-            self.best_path = f"{self.ckpt_path}/{self.name}.pth"
-            os.makedirs(self.ckpt_path, exist_ok=True)
-
-        self.log(f'[INFO] Cmdline: {self.argv}')
-        self.log(
-            f'[INFO] Trainer: {self.name} | {self.time_stamp} | {self.device} | {"fp16" if self.fp16 else "fp32"} | {self.workspace}')
-        self.log(f'[INFO] #parameters: {sum([p.numel() for p in self.nerf.parameters() if p.requires_grad])}')
-
-        if self.workspace is not None:
-            if self.use_checkpoint == "scratch":
-                self.log("[INFO] Training from scratch ...")
-            elif self.use_checkpoint == "latest":
-                self.log("[INFO] Loading latest checkpoint ...")
-                self.load_checkpoint()
-            elif self.use_checkpoint == "latest_model":
-                self.log("[INFO] Loading latest checkpoint (model only)...")
-                self.load_checkpoint(model_only=True)
-            elif self.use_checkpoint == "best":
-                if os.path.exists(self.best_path):
-                    self.log("[INFO] Loading best checkpoint ...")
-                    self.load_checkpoint(self.best_path)
-                else:
-                    self.log(f"[INFO] {self.best_path} not found, loading latest ...")
-                    self.load_checkpoint()
-            else:  # path to ckpt
-                self.log(f"[INFO] Loading {self.use_checkpoint} ...")
-                self.load_checkpoint(self.use_checkpoint)
 
     # calculate the text embs.
     def prepare_embeddings(self, text, negative=None):
 
         # text embeddings (stable-diffusion)
-        self.text_z = {}
+        if self.opt.text is not None:
 
-        self.text_z['default'] = self.diffusion.get_text_embeds([text])
-        if negative is not None:
-            self.text_z['uncond'] = self.diffusion.get_text_embeds([negative])
+            self.text_z = {}
 
-        for d in ['front', 'side', 'back']:
-            self.text_z[d] = self.diffusion.get_text_embeds([f"{self.opt.text}, {d} view"])
+            self.text_z['default'] = self.guidance.get_text_embeds([self.opt.text])
+            self.text_z['uncond'] = self.guidance.get_text_embeds([self.opt.negative])
 
+            for d in ['front', 'side', 'back']:
+                self.text_z[d] = self.guidance.get_text_embeds([f"{self.opt.text}, {d} view"])
+        else:
+            self.text_z = None
 
     def training_step(self, batch, batch_idx):
         # update grid every 16 steps
