@@ -160,9 +160,8 @@ class StableDiffusion(nn.Module):
         # kiui.vis.plot_image(imgs)
 
         # w(t), sigma_t^2
-        w = (1 - self.alphas[t])
-        variations = noise_pred - noise
-        grad = grad_scale * w * (variations)
+        w = (1 - self.alphas[t]) * torch.sqrt(self.alphas[t])
+        grad = grad_scale * w * (noise_pred - noise)
         grad = torch.nan_to_num(grad)
 
         # since we omitted an item in grad, we need to use the custom function to specify the gradient
