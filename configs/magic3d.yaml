@@ -3,27 +3,43 @@ module:
   params:
     text: a
     negative: 0
-    O: a
-    O2: a
-    test: a
-    eval_interval: a
-    workspace: a
     guidance: a
     seed: a
-    image: a
-    known_view_interval: a
     guidance_scale: a
-    save_mesh: a
     mcubes_resolution: a
     decimate_target: a
-    dmtet: a
-    tet_grid_size: a
-    init_ckpt: a
+    lr: 1e-3
+    max_steps: 1024
+    num_steps: 64
+    upsameple_steps: 64
+    update_extra_interval: 16
+    max_ray_batch: 4096
+    latent_iter_ratio: 0.2
+    albedo_iter_ratio: 0
+    min_ambient_ratio: 0.2
+    jitter_pose: False
+    jitter_center: 0.2
+    jitter_target: 0.2
+    jitter_up: 0.02
+    uniform_sphere_rate: 0
+    grad_clip: -1
+    grad_clip_rgb: -1
+
+    bg_radius: 1.4
+    density_activation: exp
+    density_thresh: 10
+    blob_density: 5
+    blob_radius: 0.2
 
     nerf_config:
+      w: 64
+      h: 64
+      known_view_scale: 1.5
+      known_view_noise_scale: 2e-3
 
     diffusion_config:
-
+      fp16: False
+      vram: False
 
     gui_config:
       gui: false

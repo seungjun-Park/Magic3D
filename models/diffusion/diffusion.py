@@ -1,7 +1,4 @@
-from transformers import CLIPTextModel, CLIPTokenizer, logging
-from diffusers import AutoencoderKL, UNet2DConditionModel, PNDMScheduler, DDIMScheduler, StableDiffusionPipeline
-from diffusers.utils.import_utils import is_xformers_available
-from os.path import isfile
+from diffusers import StableDiffusionPipeline
 
 from typing import Any, Callable, Dict, List, Optional, Union
 
@@ -43,19 +40,17 @@ class UNet2DConditionOutput:
 
 class DiffusionWrapper(nn.Module):
     def __init__(self,
-                 device=None,
+                 device,
                  grad_scale=1.0,
                  fp16=False,
                  model_id="stabilityai/stable-diffusion-2-1-base",
-                 t_range=[0.02, 0.5],
-                 vram_O=False):
+                 t_range=[0.02, 0.98],
+                 vram=False,
+                 variance_preserving=False
+                 ):
         super().__init__()
 
-        if device is None:
-            self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-        else:
-            self.device = device
+        self.device = device
 
         self.precision = torch.float16 if fp16 else torch.float32
         self.grad_scale = grad_scale
@@ -63,8 +58,9 @@ class DiffusionWrapper(nn.Module):
         # Create model
         self.model = StableDiffusionPipeline.from_pretrained(model_id, torch_dtype=self.precision)
         self.t_range = t_range
+        self.variance_preserving = variance_preserving
 
-        if vram_O:
+        if vram:
             self.model.enable_sequential_cpu_offload()
             self.model.enable_vae_slicing()
             self.model.unet.to(memory_format=torch.channels_last)
@@ -81,13 +77,12 @@ class DiffusionWrapper(nn.Module):
         self.unet = self.model.unet
 
         self.scheduler = self.model.schedular
-
         self.num_timesteps = self.scheduler.config.num_train_timesteps
-        self.min_step = int(self.num_timesteps * self.t_range[0])
-        self.max_step = int(self.num_timesteps * self.t_range[1])
-        self.alphas = self.scheduler.alphas_cumprod.to(self.device)  # for convenience
+        self.min_step = int(self.num_timesteps * t_range[0])
+        self.max_step = int(self.num_timesteps * t_range[1]) + 1
+        self.alphas_cumprod = self.scheduler.alphas_cumprod.to(self.device)  # for convenience
 
-        print(f'[INFO] loaded stable diffusion!')
+        print(f'[INFO] loaded {model_id} stable diffusion model.')
 
     def forward(self,
                 pred_rgb: torch.Tensor,
@@ -97,13 +92,9 @@ class DiffusionWrapper(nn.Module):
                 guidance_scale: float = 7.5,
                 negative_prompt: Optional[Union[str, List[str]]] = None,
                 num_images_per_prompt: Optional[int] = 1,
-                eta: float = 0.0,
-                generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
                 prompt_embeds: Optional[torch.FloatTensor] = None,
                 negative_prompt_embeds: Optional[torch.FloatTensor] = None,
                 return_dict: bool = True,
-                callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
-                callback_steps: int = 1,
                 cross_attention_kwargs: Optional[Dict[str, Any]] = None,
         ):
 
@@ -124,12 +115,13 @@ class DiffusionWrapper(nn.Module):
         # interp to 512x512 to be fed into vae.
         pred_rgb_resize = F.interpolate(pred_rgb, (height, width), mode='bilinear', align_corners=False)
         outputs.update({'pred_rgb': pred_rgb_resize})
+
         # encode image into latents with vae, requires grad!
         latents = self.encode_imgs(pred_rgb_resize)
         outputs.update({'latents': latents})
 
         # timestep ~ U(0.02, 0.98) to avoid very high/low noise level
-        t = torch.randint(self.min_step, self.max_step + 1, (1, ), device=self.device)
+        t = torch.randint(self.min_step, self.max_step, (latents.shape[0], ), device=self.device)
 
         # predict the noise residual with unet, NO grad!
         with torch.no_grad():
@@ -153,15 +145,15 @@ class DiffusionWrapper(nn.Module):
         outputs.update({'noise_pred': noise_pred})
 
         # w(t), sigma_t^2
-        w = (1 - self.alphas[t])
+        w = (1 - self.alphas_cumprod[t]) if self.variance_preserving else (1 - self.alphas_cumprod[t]) * torch.sqrt((1 - self.alphas_cumprod[t]) ** 2)
         difference = noise_pred - noise
         outputs.update({'difference': difference})
 
-        loss = self.grad_scale * w * (difference)
+        loss = self.grad_scale * w * difference
         loss = torch.nan_to_num(loss)
 
         # since we omitted an item in grad, we need to use the custom function to specify the gradient
-        #loss = SpecifyGradient.apply(latents, grad) use autograd?
+        # loss = SpecifyGradient.apply(latents, grad)
 
         if return_dict:
             return loss, outputs

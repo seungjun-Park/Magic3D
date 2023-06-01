@@ -12,115 +12,60 @@ from utils import instantiate_from_config
 
 class Magic3D(pl.LightningModule):
     def __init__(self,
-                 name,  # name of this experiment
                  nerf_config,
                  diffusion_config,
-                 text,
-                 negative,
-                 O,
-                 O2,
-                 guidance_scale,
-                 save_mesh,
-                 mcubes_resolution=256,
-                 decimate_target=5e4,
+                 prompt,
+                 negative=None,
                  ema_decay=None,  # if use EMA, set the decay
                  fp16=False,  # amp optimize level
-                 eval_interval=1,  # eval once every $ epoch
-                 max_keep_ckpt=2,  # max num of saved ckpts in disk
-                 workspace='workspace',  # workspace to save logs & ckpts
+                 lr=1e-3,
+                 log_interval=100,
+                 max_epoch=100,
+                 guidance_scale=100,
+                 extract_mesh=True,
+                 progressive_view=True,
+                 progressive_view_init_ratio=0.2,
+                 progressive_level=True,
+                 known_view_scale=1.5,
+                 known_view_noise_scale=2e-3,
                  ):
         super().__init__()
-        self.name = name
         self.ema_decay = ema_decay
         self.fp16 = fp16
-        self.max_keep_ckpt = max_keep_ckpt
-        self.eval_interval = eval_interval
+        self.lr = lr
+        self.guidance_scale = guidance_scale
+        self.extract_mesh = extract_mesh
+
+        self.progressive_view = progressive_view
+        self.progressive_view_init_ratio = progressive_view_init_ratio
+        self.progressive_level = progressive_level
+
+        self.known_view_cale = known_view_scale
+        self.known_view_noise_scale = known_view_noise_scale
+
+        self.log_interval = log_interval
 
         self.nerf = instantiate_from_config(nerf_config)
         self.diffusion = instantiate_from_config(diffusion_config)
 
-        self.text = text
+        self.prompt = prompt
         self.negative = negative
+        self.direction_prompt = ['front', 'side', 'back']
 
         # text prompt
         self.diffusion.eval()
         for p in self.diffusion.parameters():
             p.requires_grad = False
-        self.prepare_embeddings()
 
         if ema_decay is not None:
             self.ema = ExponentialMovingAverage(self.model.parameters(), decay=ema_decay)
         else:
             self.ema = None
 
-        self.scaler = torch.cuda.amp.GradScaler(enabled=self.fp16)
-
-        self.epoch = 0
-
-    # calculate the text embs.
-    def prepare_embeddings(self, text, negative=None):
-
-        # text embeddings (stable-diffusion)
-        if self.opt.text is not None:
-
-            self.text_z = {}
-
-            self.text_z['default'] = self.guidance.get_text_embeds([self.opt.text])
-            self.text_z['uncond'] = self.guidance.get_text_embeds([self.opt.negative])
-
-            for d in ['front', 'side', 'back']:
-                self.text_z[d] = self.guidance.get_text_embeds([f"{self.opt.text}, {d} view"])
-        else:
-            self.text_z = None
-
-    def training_step(self, batch, batch_idx):
-        # update grid every 16 steps
-        if (self.model.cuda_ray or self.model.taichi_ray) and self.global_step % self.opt.update_extra_interval == 0:
-            with torch.cuda.amp.autocast(enabled=self.fp16):
-                self.model.update_extra_state()
-
-        with torch.cuda.amp.autocast(enabled=self.fp16):
-            pred_rgbs, pred_depths, loss, variations = self(batch)
-
-        # hooked grad clipping for RGB space
-        if self.opt.grad_clip_rgb >= 0:
-            def _hook(grad):
-                if self.opt.fp16:
-                    # correctly handle the scale
-                    grad_scale = self.scaler._get_scale_async()
-                    return grad.clamp(grad_scale * -self.opt.grad_clip_rgb, grad_scale * self.opt.grad_clip_rgb)
-                else:
-                    return grad.clamp(-self.opt.grad_clip_rgb, self.opt.grad_clip_rgb)
-
-            pred_rgbs.register_hook(_hook)
-            # pred_rgbs.retain_grad()
-
-        self.scaler.scale(loss).backward()
-
-        self.post_train_step()
-        self.scaler.step(self.optimizer)
-        self.scaler.update()
-
-        if self.scheduler_update_every_step:
-            self.lr_scheduler.step()
-
-        loss_val = loss.item()
-
-        if self.epoch != self.current_epoch:
-            self.epoch = self.current_epoch
-            tb = self.logger.experiment
-            self.writer.add_scalar("train/loss", loss_val, self.global_step)
-            self.writer.add_scalar("train/lr", self.optimizer.param_groups[0]['lr'], self.global_step)
-            self.writer.add_image('sds grad', variations[0], self.global_step)
-
-    def on_train_batch_end(self, outputs, batch, batch_idx):
-        if self.ema is not None:
-            self.ema.update()
-
     def forward(self, data):
         # progressively relaxing view range
-        if self.opt.progressive_view:
-            r = min(1.0, 0.2 + self.global_step / (0.5 * self.opt.iters))
+        if self.progressive_view:
+            r = min(1.0, 0.2 + self.global_step / (0.5 * self.trainer.max_epochs * self.trainer.num_training_batches))
             self.opt.phi_range = [self.opt.default_phi * (1 - r) + self.opt.full_phi_range[0] * r,
                                   self.opt.default_phi * (1 - r) + self.opt.full_phi_range[1] * r]
             self.opt.theta_range = [self.opt.default_theta * (1 - r) + self.opt.full_theta_range[0] * r,
@@ -131,8 +76,9 @@ class Magic3D(pl.LightningModule):
                                    self.opt.default_fovy * (1 - r) + self.opt.full_fovy_range[1] * r]
 
         # progressively increase max_level
-        if self.opt.progressive_level:
-            self.model.max_level = min(1.0, 0.25 + self.global_step / (0.5 * self.opt.iters))
+        if self.progressive_level:
+            # total iters = total epoch * total batches
+            self.nerf.max_level = min(1.0, 0.25 + self.global_step / (0.5 * self.trainer.max_epochs * self.trainer.num_training_batches))
 
         rays_o = data['rays_o']  # [B, N, 3]
         rays_d = data['rays_d']  # [B, N, 3]
@@ -245,209 +191,35 @@ class Magic3D(pl.LightningModule):
             if self.opt.lambda_mesh_laplacian > 0:
                 loss = loss + self.opt.lambda_mesh_laplacian * outputs['lap_loss']
 
-        return pred_rgb, pred_depth, loss, variations
+        return loss
 
-    def validation_step(self, batch, batch_idx):
-        self.log(f"++> Evaluate {self.workspace} at epoch {self.epoch} ...")
+    def training_step(self, batch, batch_idx):
+        with torch.cuda.amp.autocast(enabled=self.fp16):
+            loss, outputs = self(batch)
 
-        if name is None:
-            name = f'{self.name}_ep{self.epoch:04d}'
-
-        total_loss = 0
+        if self.global_step % self.log_interval == 0:
+            tb = self.logger.experiment
 
 
+        return loss
+
+    def configure_gradient_clipping(
+        self,
+        optimizer,
+        optimizer_idx,
+        gradient_clip_val=None,
+        gradient_clip_algorithm=None,
+    ):
+        self.clip_gradients(optimizer, gradient_clip_val=gradient_clip_val, gradient_clip_algorithm=gradient_clip_algorithm)
+
+        # if self.lambda_tv > 0:
+        #     lambda_tv = min(1.0, self.global_step / (0.5 * self.opt.iters)) * self.lambda_tv
+        #     self.nerf.encoder.grad_total_variation(lambda_tv, None, self.nerf.bound)
+        # if self.lambda_wd > 0:
+        #     self.nerf.encoder.grad_weight_decay(self.lambda_wd)
+
+    def on_train_batch_end(self, outputs, batch, batch_idx):
         if self.ema is not None:
-            self.ema.store()
-            self.ema.copy_to()
+            self.ema.update()
 
-            self.local_step += 1
-
-            with torch.cuda.amp.autocast(enabled=self.fp16):
-                preds, preds_depth, loss = self.eval_step(data)
-
-            # all_gather/reduce the statistics (NCCL only support all_*)
-            if self.world_size > 1:
-                dist.all_reduce(loss, op=dist.ReduceOp.SUM)
-                loss = loss / self.world_size
-
-                preds_list = [torch.zeros_like(preds).to(self.device) for _ in
-                              range(self.world_size)]  # [[B, ...], [B, ...], ...]
-                dist.all_gather(preds_list, preds)
-                preds = torch.cat(preds_list, dim=0)
-
-                preds_depth_list = [torch.zeros_like(preds_depth).to(self.device) for _ in
-                                    range(self.world_size)]  # [[B, ...], [B, ...], ...]
-                dist.all_gather(preds_depth_list, preds_depth)
-                preds_depth = torch.cat(preds_depth_list, dim=0)
-
-            loss_val = loss.item()
-            total_loss += loss_val
-
-            # only rank = 0 will perform evaluation.
-            if self.local_rank == 0:
-                # save image
-                save_path = os.path.join(self.workspace, 'validation', f'{name}_{self.local_step:04d}_rgb.png')
-                save_path_depth = os.path.join(self.workspace, 'validation',
-                                               f'{name}_{self.local_step:04d}_depth.png')
-
-                # self.log(f"==> Saving validation image to {save_path}")
-                os.makedirs(os.path.dirname(save_path), exist_ok=True)
-
-                pred = preds[0].detach().cpu().numpy()
-                pred = (pred * 255).astype(np.uint8)
-
-                pred_depth = preds_depth[0].detach().cpu().numpy()
-                pred_depth = (pred_depth - pred_depth.min()) / (pred_depth.max() - pred_depth.min() + 1e-6)
-                pred_depth = (pred_depth * 255).astype(np.uint8)
-
-                cv2.imwrite(save_path, cv2.cvtColor(pred, cv2.COLOR_RGB2BGR))
-                cv2.imwrite(save_path_depth, pred_depth)
-
-                pbar.set_description(f"loss={loss_val:.4f} ({total_loss / self.local_step:.4f})")
-                pbar.update(loader.batch_size)
-
-        average_loss = total_loss / self.local_step
-        self.stats["valid_loss"].append(average_loss)
-
-
-        if self.ema is not None:
-            self.ema.restore()
-
-
-
-    def eval_step(self, data):
-
-        rays_o = data['rays_o']  # [B, N, 3]
-        rays_d = data['rays_d']  # [B, N, 3]
-        mvp = data['mvp']
-
-        B, N = rays_o.shape[:2]
-        H, W = data['H'], data['W']
-
-        shading = data['shading'] if 'shading' in data else 'albedo'
-        ambient_ratio = data['ambient_ratio'] if 'ambient_ratio' in data else 1.0
-        light_d = data['light_d'] if 'light_d' in data else None
-
-        outputs = self.model.render(rays_o, rays_d, mvp, H, W, staged=True, perturb=False, bg_color=None,
-                                    light_d=light_d, ambient_ratio=ambient_ratio, shading=shading)
-        pred_rgb = outputs['image'].reshape(B, H, W, 3)
-        pred_depth = outputs['depth'].reshape(B, H, W)
-
-        # dummy
-        loss = torch.zeros([1], device=pred_rgb.device, dtype=pred_rgb.dtype)
-
-        return pred_rgb, pred_depth, loss
-
-    def post_train_step(self):
-
-        # unscale grad before modifying it!
-        # ref: https://pytorch.org/docs/stable/notes/amp_examples.html#gradient-clipping
-        self.scaler.unscale_(self.optimizer)
-
-        # clip grad
-        if self.opt.grad_clip >= 0:
-            torch.nn.utils.clip_grad_value_(self.model.parameters(), self.opt.grad_clip)
-
-        if not self.opt.dmtet and self.opt.backbone == 'grid':
-
-            if self.opt.lambda_tv > 0:
-                lambda_tv = min(1.0, self.global_step / (0.5 * self.opt.iters)) * self.opt.lambda_tv
-                self.model.encoder.grad_total_variation(lambda_tv, None, self.model.bound)
-            if self.opt.lambda_wd > 0:
-                self.model.encoder.grad_weight_decay(self.opt.lambda_wd)
-
-    def test_step(self, data, bg_color=None, perturb=False):
-        rays_o = data['rays_o']  # [B, N, 3]
-        rays_d = data['rays_d']  # [B, N, 3]
-        mvp = data['mvp']
-
-        B, N = rays_o.shape[:2]
-        H, W = data['H'], data['W']
-
-        if bg_color is not None:
-            bg_color = bg_color.to(rays_o.device)
-
-        shading = data['shading'] if 'shading' in data else 'albedo'
-        ambient_ratio = data['ambient_ratio'] if 'ambient_ratio' in data else 1.0
-        light_d = data['light_d'] if 'light_d' in data else None
-
-        outputs = self.model.render(rays_o, rays_d, mvp, H, W, staged=True, perturb=perturb, light_d=light_d,
-                                    ambient_ratio=ambient_ratio, shading=shading, bg_color=bg_color)
-
-        pred_rgb = outputs['image'].reshape(B, H, W, 3)
-        pred_depth = outputs['depth'].reshape(B, H, W)
-
-        return pred_rgb, pred_depth, None
-
-    def save_mesh(self, loader=None, save_path=None):
-
-        if save_path is None:
-            save_path = os.path.join(self.workspace, 'mesh')
-
-        self.log(f"==> Saving mesh to {save_path}")
-
-        os.makedirs(save_path, exist_ok=True)
-
-        self.model.export_mesh(save_path, resolution=self.opt.mcubes_resolution,
-                               decimate_target=self.opt.decimate_target)
-
-        self.log(f"==> Finished saving mesh.")
-
-    ### ------------------------------
-
-
-    def test(self, loader, save_path=None, name=None, write_video=True):
-
-        if save_path is None:
-            save_path = os.path.join(self.workspace, 'results')
-
-        if name is None:
-            name = f'{self.name}_ep{self.epoch:04d}'
-
-        os.makedirs(save_path, exist_ok=True)
-
-        self.log(f"==> Start Test, save results to {save_path}")
-
-        pbar = tqdm.tqdm(total=len(loader) * loader.batch_size,
-                         bar_format='{percentage:3.0f}% {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
-        self.model.eval()
-
-        if write_video:
-            all_preds = []
-            all_preds_depth = []
-
-        with torch.no_grad():
-
-            for i, data in enumerate(loader):
-
-                with torch.cuda.amp.autocast(enabled=self.fp16):
-                    preds, preds_depth, _ = self.test_step(data)
-
-                pred = preds[0].detach().cpu().numpy()
-                pred = (pred * 255).astype(np.uint8)
-
-                pred_depth = preds_depth[0].detach().cpu().numpy()
-                pred_depth = (pred_depth - pred_depth.min()) / (pred_depth.max() - pred_depth.min() + 1e-6)
-                pred_depth = (pred_depth * 255).astype(np.uint8)
-
-                if write_video:
-                    all_preds.append(pred)
-                    all_preds_depth.append(pred_depth)
-                else:
-                    cv2.imwrite(os.path.join(save_path, f'{name}_{i:04d}_rgb.png'),
-                                cv2.cvtColor(pred, cv2.COLOR_RGB2BGR))
-                    cv2.imwrite(os.path.join(save_path, f'{name}_{i:04d}_depth.png'), pred_depth)
-
-                pbar.update(loader.batch_size)
-
-        if write_video:
-            all_preds = np.stack(all_preds, axis=0)
-            all_preds_depth = np.stack(all_preds_depth, axis=0)
-
-            imageio.mimwrite(os.path.join(save_path, f'{name}_rgb.mp4'), all_preds, fps=25, quality=8,
-                             macro_block_size=1)
-            imageio.mimwrite(os.path.join(save_path, f'{name}_depth.mp4'), all_preds_depth, fps=25, quality=8,
-                             macro_block_size=1)
-
-        self.log(f"==> Finished Test.")
 
