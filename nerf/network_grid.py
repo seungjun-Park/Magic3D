@@ -94,6 +94,12 @@ class NeRFNetwork(NeRFRenderer):
         ], dim=-1)
 
         return -normal
+
+    def normal(self, x):
+        normal = self.finite_difference_normal(x)
+        normal = safe_normalize(normal)
+        normal = torch.nan_to_num(normal)
+        return normal
     
     def forward(self, x, d, l=None, ratio=1, shading='albedo'):
         # x: [N, 3], in [-bound, bound]
@@ -110,11 +116,9 @@ class NeRFNetwork(NeRFRenderer):
         else: # lambertian shading
 
             # normal = self.normal_net(enc)
-            normal = self.finite_difference_normal(x)
-            normal = safe_normalize(normal)
-            normal = torch.nan_to_num(normal)
+            normal = self.normal(x)
 
-            lambertian = ratio + (1 - ratio) * (normal @ l).clamp(min=0) # [N,]
+            lambertian = ratio + (1 - ratio) * (normal * l).sum(-1).clamp(min=0) # [N,]
 
             if shading == 'textureless':
                 color = lambertian.unsqueeze(-1).repeat(1, 3)
@@ -161,7 +165,7 @@ class NeRFNetwork(NeRFRenderer):
             # params.append({'params': self.encoder_bg.parameters(), 'lr': lr * 10})
             params.append({'params': self.bg_net.parameters(), 'lr': lr})
         
-        if self.opt.dmtet:
+        if self.opt.dmtet and not self.opt.lock_geo:
             params.append({'params': self.sdf, 'lr': lr})
             params.append({'params': self.deform, 'lr': lr})
 
