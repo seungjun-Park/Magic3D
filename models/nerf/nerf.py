@@ -262,19 +262,27 @@ def laplacian_smooth_loss(verts, faces):
 
 class InstantNGP(nn.Module):
     def __init__(self,
-                 bound,
-                 dmtet,
-                 min_near,
-                 density_thresh,
-                 tet_grid_size,
-                 h,
-                 w,
+                 bound=1,
+                 dmtet=False,
+                 min_near=0.01,
+                 density_thresh=10,
+                 tet_grid_size=128,
                  #nerf
-                 opt,
                  num_layers=3,
                  hidden_dim=64,
                  num_layers_bg=2,
                  hidden_dim_bg=32,
+                 density_activation='exp',
+                 bg_radius=0.2,
+                 blob_density=0,
+                 blob_radius=0,
+                 num_steps=64,
+                 upscale_steps=32,
+                 lambda_orient=1e-2,
+                 lambda_2d_normal_smooth=0,
+                 lambda_normal=0,
+                 lambda_mesh_laplacian=0.5,
+                 lambda_mesh_normal=0.5,
                  ):
         super().__init__()
 
@@ -283,8 +291,17 @@ class InstantNGP(nn.Module):
         self.grid_size = 128
         self.max_level = None
         self.dmtet = dmtet
+        self.tet_grid_size = tet_grid_size
         self.min_near = min_near
         self.density_thresh = density_thresh
+
+        self.num_steps = num_steps
+        self.upscale_steps = upscale_steps
+        self.lambda_orient = lambda_orient
+        self.lambda_2d_normal_smooth = lambda_2d_normal_smooth
+        self.lambda_normal = lambda_normal
+        self.lambda_mesh_laplacian = lambda_mesh_laplacian
+        self.lambda_mesh_normal = lambda_mesh_normal
 
         # prepare aabb with a 6D tensor (xmin, ymin, zmin, xmax, ymax, zmax)
         # NOTE: aabb (can be rectangular) is only used to generate points, we still rely on bound (always cubic) to calculate density grid and hashing.
@@ -297,7 +314,7 @@ class InstantNGP(nn.Module):
 
         if self.dmtet:
             # load dmtet vertices
-            tets = np.load('tets/{}_tets.npz'.format(self.opt.tet_grid_size))
+            tets = np.load('tets/{}_tets.npz'.format(self.tet_grid_size))
             self.verts = - torch.tensor(tets['vertices'], dtype=torch.float32, device='cuda') * 2  # covers [-1, 1]
             self.indices = torch.tensor(tets['indices'], dtype=torch.long, device='cuda')
             self.tet_scale = torch.tensor([1, 1, 1], dtype=torch.float32, device='cuda')
@@ -324,6 +341,10 @@ class InstantNGP(nn.Module):
 
         self.num_layers = num_layers
         self.hidden_dim = hidden_dim
+        self.density_activation = density_activation
+        self.bg_radius = bg_radius
+        self.blob_density = blob_density
+        self.blob_radius = blob_radius
 
         self.encoder, self.in_dim = get_encoder('hashgrid', input_dim=3, log2_hashmap_size=19,
                                                 desired_resolution=2048 * self.bound, interpolation='smoothstep')
@@ -331,10 +352,10 @@ class InstantNGP(nn.Module):
         self.sigma_net = MLP(self.in_dim, 4, hidden_dim, num_layers, bias=True)
         # self.normal_net = MLP(self.in_dim, 3, hidden_dim, num_layers, bias=True)
 
-        self.density_activation = trunc_exp if self.opt.density_activation == 'exp' else biased_softplus
+        self.density_activation = trunc_exp if self.density_activation == 'exp' else biased_softplus
 
         # background network
-        if self.opt.bg_radius > 0:
+        if self.bg_radius > 0:
             self.num_layers_bg = num_layers_bg
             self.hidden_dim_bg = hidden_dim_bg
 
@@ -351,10 +372,10 @@ class InstantNGP(nn.Module):
 
         d = (x ** 2).sum(-1)
 
-        if self.opt.density_activation == 'exp':
-            g = self.opt.blob_density * torch.exp(- d / (2 * self.opt.blob_radius ** 2))
+        if self.density_activation == 'exp':
+            g = self.blob_density * torch.exp(- d / (2 * self.blob_radius ** 2))
         else:
-            g = self.opt.blob_density * (1 - torch.sqrt(d) / self.opt.blob_radius)
+            g = self.blob_density * (1 - torch.sqrt(d) / self.blob_radius)
 
         return g
 
@@ -420,10 +441,10 @@ class InstantNGP(nn.Module):
     @torch.no_grad()
     def export_mesh(self, path, resolution=None, decimate_target=-1, S=128):
 
-        if self.opt.dmtet:
+        if self.dmtet:
 
             sdf = self.sdf
-            deform = torch.tanh(self.deform) / self.opt.tet_grid_size
+            deform = torch.tanh(self.deform) / self.tet_grid_size
 
             vertices, triangles = self.dmtet(self.verts + deform, sdf, self.indices)
 
@@ -442,7 +463,7 @@ class InstantNGP(nn.Module):
                 density_thresh = self.density_thresh
 
             # TODO: use a larger thresh to extract a surface mesh from the density field, but this value is very empirical...
-            if self.opt.density_activation == 'softplus':
+            if self.density_activation == 'softplus':
                 density_thresh = density_thresh * 25
 
             sigmas = np.zeros([resolution, resolution, resolution], dtype=np.float32)
@@ -646,12 +667,12 @@ class InstantNGP(nn.Module):
 
         # print(f'nears = {nears.min().item()} ~ {nears.max().item()}, fars = {fars.min().item()} ~ {fars.max().item()}')
 
-        z_vals = torch.linspace(0.0, 1.0, self.opt.num_steps, device=device).unsqueeze(0)  # [1, T]
-        z_vals = z_vals.expand((N, self.opt.num_steps))  # [N, T]
+        z_vals = torch.linspace(0.0, 1.0, self.num_steps, device=device).unsqueeze(0)  # [1, T]
+        z_vals = z_vals.expand((N, self.num_steps))  # [N, T]
         z_vals = nears + (fars - nears) * z_vals  # [N, T], in [nears, fars]
 
         # perturb z_vals
-        sample_dist = (fars - nears) / self.opt.num_steps
+        sample_dist = (fars - nears) / self.num_steps
         if perturb:
             z_vals = z_vals + (torch.rand(z_vals.shape, device=device) - 0.5) * sample_dist
             # z_vals = z_vals.clamp(nears, fars) # avoid out of bounds xyzs.
@@ -667,10 +688,10 @@ class InstantNGP(nn.Module):
 
         # sigmas = density_outputs['sigma'].view(N, self.opt.num_steps) # [N, T]
         for k, v in density_outputs.items():
-            density_outputs[k] = v.view(N, self.opt.num_steps, -1)
+            density_outputs[k] = v.view(N, self.num_steps, -1)
 
         # upsample z_vals (nerf-like)
-        if self.opt.upsample_steps > 0:
+        if self.upsample_steps > 0:
             with torch.no_grad():
 
                 deltas = z_vals[..., 1:] - z_vals[..., :-1]  # [N, T-1]
@@ -682,7 +703,7 @@ class InstantNGP(nn.Module):
 
                 # sample new z_vals
                 z_vals_mid = (z_vals[..., :-1] + 0.5 * deltas[..., :-1])  # [N, T-1]
-                new_z_vals = sample_pdf(z_vals_mid, weights[:, 1:-1], self.opt.upsample_steps,
+                new_z_vals = sample_pdf(z_vals_mid, weights[:, 1:-1], self.upsample_steps,
                                         det=not self.training).detach()  # [N, t]
 
                 new_xyzs = rays_o.unsqueeze(-2) + rays_d.unsqueeze(-2) * new_z_vals.unsqueeze(
@@ -693,7 +714,7 @@ class InstantNGP(nn.Module):
             new_density_outputs = self.density(new_xyzs.reshape(-1, 3))
             # new_sigmas = new_density_outputs['sigma'].view(N, self.opt.upsample_steps) # [N, t]
             for k, v in new_density_outputs.items():
-                new_density_outputs[k] = v.view(N, self.opt.upsample_steps, -1)
+                new_density_outputs[k] = v.view(N, self.upsample_steps, -1)
 
             # re-order
             z_vals = torch.cat([z_vals, new_z_vals], dim=1)  # [N, T+t]
@@ -734,7 +755,7 @@ class InstantNGP(nn.Module):
 
         # mix background color
         if bg_color is None:
-            if self.opt.bg_radius > 0:
+            if self.bg_radius > 0:
                 # use the bg model to calculate bg_color
                 bg_color = self.background(rays_d)  # [N, 3]
             else:
@@ -747,12 +768,12 @@ class InstantNGP(nn.Module):
         weights_sum = weights_sum.reshape(*prefix)
 
         if self.training:
-            if self.opt.lambda_orient > 0 and normals is not None:
+            if self.lambda_orient > 0 and normals is not None:
                 # orientation loss
                 loss_orient = weights.detach() * (normals * dirs).sum(-1).clamp(min=0) ** 2
                 results['loss_orient'] = loss_orient.sum(-1).mean()
 
-            if (self.opt.lambda_2d_normal_smooth > 0 or self.opt.lambda_normal > 0) and normals is not None:
+            if (self.lambda_2d_normal_smooth > 0 or self.lambda_normal > 0) and normals is not None:
                 normal_image = torch.sum(weights.unsqueeze(-1) * (normals + 1) / 2, dim=-2)  # [N, 3], in [0, 1]
                 results['normal_image'] = normal_image
 
@@ -767,7 +788,7 @@ class InstantNGP(nn.Module):
     def init_tet(self):
         density_thresh = self.density_thresh
 
-        if self.opt.density_activation == 'softplus':
+        if self.density_activation == 'softplus':
             density_thresh = density_thresh * 25
 
         # init scale
@@ -799,7 +820,7 @@ class InstantNGP(nn.Module):
 
         # get mesh
         sdf = self.sdf
-        deform = torch.tanh(self.deform) / self.opt.tet_grid_size
+        deform = torch.tanh(self.deform) / self.tet_grid_size
 
         verts, faces = self.dmtet(self.verts + deform, sdf, self.indices)
 
@@ -856,7 +877,7 @@ class InstantNGP(nn.Module):
 
         # mix background color
         if bg_color is None:
-            if self.opt.bg_radius > 0:
+            if self.bg_radius > 0:
                 # use the bg model to calculate bg_color
                 bg_color = self.background(rays_d)  # [N, 3]
             else:
@@ -872,15 +893,15 @@ class InstantNGP(nn.Module):
         results['image'] = color
         results['weights_sum'] = alpha.squeeze(-1)
 
-        if self.opt.lambda_2d_normal_smooth > 0 or self.opt.lambda_normal > 0:
+        if self.lambda_2d_normal_smooth > 0 or self.lambda_normal > 0:
             normal_image = dr.antialias((normal + 1) / 2, rast, verts_clip, faces).squeeze(0).clamp(0, 1)  # [H, W, 3]
             results['normal_image'] = normal_image
 
         # regularizations
         if self.training:
-            if self.opt.lambda_mesh_normal > 0:
+            if self.lambda_mesh_normal > 0:
                 results['normal_loss'] = normal_consistency(face_normals, faces)
-            if self.opt.lambda_mesh_laplacian > 0:
+            if self.lambda_mesh_laplacian > 0:
                 results['lap_loss'] = laplacian_smooth_loss(verts, faces)
 
         return results
@@ -941,11 +962,11 @@ class InstantNGP(nn.Module):
             # {'params': self.normal_net.parameters(), 'lr': lr},
         ]
 
-        if self.opt.bg_radius > 0:
+        if self.bg_radius > 0:
             # params.append({'params': self.encoder_bg.parameters(), 'lr': lr * 10})
             params.append({'params': self.bg_net.parameters(), 'lr': lr})
 
-        if self.opt.dmtet:
+        if self.dmtet:
             params.append({'params': self.sdf, 'lr': lr})
             params.append({'params': self.deform, 'lr': lr})
 

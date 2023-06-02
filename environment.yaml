@@ -13,6 +13,7 @@ dependencies:
   - torchaudio=0.12.0
   - numpy=1.19.2
   - pip:
+      - open3d
       - selenium
       - pytorch-lightning==1.8.6
       - torch-ema

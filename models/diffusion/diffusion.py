@@ -1,4 +1,4 @@
-from diffusers import StableDiffusionPipeline
+from diffusers import StableDiffusionPipeline, DPMSolverMultistepScheduler
 
 from typing import Any, Callable, Dict, List, Optional, Union
 
@@ -40,7 +40,7 @@ class UNet2DConditionOutput:
 
 class DiffusionWrapper(nn.Module):
     def __init__(self,
-                 device,
+                 device=None,
                  grad_scale=1.0,
                  fp16=False,
                  model_id="stabilityai/stable-diffusion-2-1-base",
@@ -50,7 +50,10 @@ class DiffusionWrapper(nn.Module):
                  ):
         super().__init__()
 
-        self.device = device
+        if device is None:
+            self.device = torch.device("cuda") if torch.cuda.is_available() else torch.device('cpu')
+        else:
+            self.device = device
 
         self.precision = torch.float16 if fp16 else torch.float32
         self.grad_scale = grad_scale
@@ -69,14 +72,13 @@ class DiffusionWrapper(nn.Module):
         else:
             self.model.to(self.device)
 
-        self.model.eval()
-
         self.vae = self.model.vae
         self.tokenizer = self.model.tokenizer
         self.text_encoder = self.model.text_encoder
         self.unet = self.model.unet
 
-        self.scheduler = self.model.schedular
+        self.scheduler = DPMSolverMultistepScheduler.from_pretrained(model_id, subfolder="scheduler", torch_dtype=self.precision)
+
         self.num_timesteps = self.scheduler.config.num_train_timesteps
         self.min_step = int(self.num_timesteps * t_range[0])
         self.max_step = int(self.num_timesteps * t_range[1]) + 1

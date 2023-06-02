@@ -11,23 +11,17 @@ import trimesh
 import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
-from torchvision import transforms
 
-from rich.console import Console
-from torch_ema import ExponentialMovingAverage
-
-from packaging import version as pver
-from nerf.utils import safe_normalize, custom_meshgrid, get_rays
+from nerf.utils import safe_normalize, get_rays
 
 DIR_COLORS = np.array([
-    [255, 0, 0, 255],  # front
-    [0, 255, 0, 255],  # side
-    [0, 0, 255, 255],  # back
-    [255, 255, 0, 255],  # side
-    [255, 0, 255, 255],  # overhead
-    [0, 255, 255, 255],  # bottom
+    [255, 0, 0, 255], # front
+    [0, 255, 0, 255], # side
+    [0, 0, 255, 255], # back
+    [255, 255, 0, 255], # side
+    [255, 0, 255, 255], # overhead
+    [0, 255, 255, 255], # bottom
 ], dtype=np.uint8)
-
 
 def visualize_poses(poses, dirs, size=0.1):
     # poses: [B, 4, 4], dirs: [B]
@@ -54,17 +48,17 @@ def visualize_poses(poses, dirs, size=0.1):
 
     trimesh.Scene(objects).show()
 
-
 def get_view_direction(thetas, phis, overhead, front):
-    #                   phis [B,];          thetas: [B,]
-    # front = 0         [0, front)
-    # side (left) = 1   [front, 180)
-    # back = 2          [180, 180+front)
-    # side (right) = 3  [180+front, 360)
-    # top = 4                               [0, overhead]
-    # bottom = 5                            [180-overhead, 180]
+    #                   phis: [B,];          thetas: [B,]
+    # front = 0             [-front/2, front/2)
+    # side (cam left) = 1   [front/2, 180-front/2)
+    # back = 2              [180-front/2, 180+front/2)
+    # side (cam right) = 3  [180+front/2, 360-front/2)
+    # top = 4               [0, overhead]
+    # bottom = 5            [180-overhead, 180]
     res = torch.zeros(thetas.shape[0], dtype=torch.long)
     # first determine by phis
+    phis = phis % (2 * np.pi)
     res[(phis < front / 2) | (phis >= 2 * np.pi - front / 2)] = 0
     res[(phis >= front / 2) & (phis < np.pi - front / 2)] = 1
     res[(phis >= np.pi - front / 2) & (phis < np.pi + front / 2)] = 2
@@ -75,85 +69,8 @@ def get_view_direction(thetas, phis, overhead, front):
     return res
 
 
-def rand_poses(size, radius_range=[1, 1.5], theta_range=[0, 120], phi_range=[0, 360], return_dirs=False,
-               angle_overhead=30, angle_front=60, jitter=False, uniform_sphere_rate=0.5):
-    ''' generate random poses from an orbit camera
-    Args:
-        size: batch size of generated poses.
-        device: where to allocate the output.
-        radius: camera radius
-        theta_range: [min, max], should be in [0, pi]
-        phi_range: [min, max], should be in [0, 2 * pi]
-    Return:
-        poses: [size, 4, 4]
-    '''
+def circle_poses(device, radius=torch.tensor([3.2]), theta=torch.tensor([60]), phi=torch.tensor([0]), return_dirs=False, angle_overhead=30, angle_front=60):
 
-    theta_range = np.array(theta_range) / 180 * np.pi
-    phi_range = np.array(phi_range) / 180 * np.pi
-    angle_overhead = angle_overhead / 180 * np.pi
-    angle_front = angle_front / 180 * np.pi
-
-    radius = torch.rand(size) * (radius_range[1] - radius_range[0]) + radius_range[0]
-
-    if random.random() < uniform_sphere_rate:
-        unit_centers = F.normalize(
-            torch.stack([
-                (torch.rand(size) - 0.5) * 2.0,
-                torch.rand(size),
-                (torch.rand(size) - 0.5) * 2.0,
-            ], dim=-1), p=2, dim=1
-        )
-        thetas = torch.acos(unit_centers[:, 1])
-        phis = torch.atan2(unit_centers[:, 0], unit_centers[:, 2])
-        phis[phis < 0] += 2 * np.pi
-        centers = unit_centers * radius.unsqueeze(-1)
-    else:
-        thetas = torch.rand(size) * (theta_range[1] - theta_range[0]) + theta_range[0]
-        phis = torch.rand(size) * (phi_range[1] - phi_range[0]) + phi_range[0]
-        phis[phis < 0] += 2 * np.pi
-
-        centers = torch.stack([
-            radius * torch.sin(thetas) * torch.sin(phis),
-            radius * torch.cos(thetas),
-            radius * torch.sin(thetas) * torch.cos(phis),
-        ], dim=-1)  # [B, 3]
-
-    targets = 0
-
-    # jitters
-    if jitter:
-        centers = centers + (torch.rand_like(centers) * 0.2 - 0.1)
-        targets = targets + torch.randn_like(centers) * 0.2
-
-    # lookat
-    forward_vector = safe_normalize(centers - targets)
-    up_vector = torch.FloatTensor([0, 1, 0]).unsqueeze(0).repeat(size, 1)
-    right_vector = safe_normalize(torch.cross(forward_vector, up_vector, dim=-1))
-
-    if jitter:
-        up_noise = torch.randn_like(up_vector) * 0.02
-    else:
-        up_noise = 0
-
-    up_vector = safe_normalize(torch.cross(right_vector, forward_vector, dim=-1) + up_noise)
-
-    poses = torch.eye(4, dtype=torch.float).unsqueeze(0).repeat(size, 1, 1)
-    poses[:, :3, :3] = torch.stack((right_vector, up_vector, forward_vector), dim=-1)
-    poses[:, :3, 3] = centers
-
-    if return_dirs:
-        dirs = get_view_direction(thetas, phis, angle_overhead, angle_front)
-    else:
-        dirs = None
-
-    # back to degree
-    thetas = thetas / np.pi * 180
-    phis = phis / np.pi * 180
-
-    return poses, dirs, thetas, phis, radius
-
-
-def circle_poses(device, radius=1.25, theta=60, phi=0, return_dirs=False, angle_overhead=30, angle_front=60):
     theta = theta / 180 * np.pi
     phi = phi / 180 * np.pi
     angle_overhead = angle_overhead / 180 * np.pi
@@ -163,15 +80,15 @@ def circle_poses(device, radius=1.25, theta=60, phi=0, return_dirs=False, angle_
         radius * torch.sin(theta) * torch.sin(phi),
         radius * torch.cos(theta),
         radius * torch.sin(theta) * torch.cos(phi),
-    ], dim=-1)  # [B, 3]
+    ], dim=-1) # [B, 3]
 
     # lookat
     forward_vector = safe_normalize(centers)
-    up_vector = torch.FloatTensor([0, 1, 0]).to(device).unsqueeze(0)
+    up_vector = torch.FloatTensor([0, 1, 0]).to(device).unsqueeze(0).repeat(len(centers), 1)
     right_vector = safe_normalize(torch.cross(forward_vector, up_vector, dim=-1))
     up_vector = safe_normalize(torch.cross(right_vector, forward_vector, dim=-1))
 
-    poses = torch.eye(4, dtype=torch.float, device=device).unsqueeze(0)
+    poses = torch.eye(4, dtype=torch.float, device=device).unsqueeze(0).repeat(len(centers), 1, 1)
     poses[:, :3, :3] = torch.stack((right_vector, up_vector, forward_vector), dim=-1)
     poses[:, :3, 3] = centers
 
@@ -185,48 +102,48 @@ def circle_poses(device, radius=1.25, theta=60, phi=0, return_dirs=False, angle_
 
 class NeRFTrainDataset(Dataset):
     def __init__(self,
-                 bound=1,
-                 dt_gamma=0,
                  near=0.01,
                  far=1000,
                  radius_range=[1.0, 1.5],
-                 theta_range=[45, 1-5],
+                 theta_range=[45, 105],
                  phi_range=[-180, 180],
                  fovy_range=[40, 80],
                  default_radius=1.2,
                  defualt_theta=90,
-                 default_phi=0,
+                 default_azimuth=0,
                  defualt_fovy=60,
-                 progressive_view=False,
-                 progressive_level=False,
                  angle_overhead=30,
                  angle_front=60,
-                 t_range=[0.02, 0.98],
                  H=256,
                  W=256,
                  size=100,
-                 jitter_pose=None,
-                 uniform_sphere_rate=None):
+                 jitter_pose=False,
+                 jitter_center=0.2,
+                 jitter_target=0.2,
+                 jitter_up=0.02,
+                 uniform_sphere_rate=0,
+                 progressive_init_ratio=0.2,
+                 ):
         super().__init__()
-
-        self.bound = bound
-        self.dt_gamma = dt_gamma
-
         self.radius_range = radius_range
         self.theta_range = theta_range
         self.phi_range = phi_range
         self.fovy_range = fovy_range
+
         self.default_radius = default_radius
         self.default_theta = defualt_theta
-        self.default_phi = default_phi
+        self.default_phi = default_azimuth
         self.default_fovy = defualt_fovy
 
-        self.progressive_view = progressive_view
-        self.progressive_level = progressive_level
+        self.progressive_phi_range = phi_range
+        self.progressive_theta_range = theta_range
+        self.progressive_radius_range = radius_range
+        self.progressive_fovy_range = fovy_range
+
+        self.progressive_init_ratio = progressive_init_ratio
 
         self.angle_overhead = angle_overhead
         self.angle_front = angle_front
-        self.t_range = t_range
 
         self.H = H
         self.W = W
@@ -239,26 +156,110 @@ class NeRFTrainDataset(Dataset):
         self.far = far  # infinite
 
         self.jitter_pose = jitter_pose
+        self.jitter_center = jitter_center
+        self.jitter_target = jitter_target
+        self.jitter_up = jitter_up
+
         self.uniform_sphere_rate = uniform_sphere_rate
+
+    def rand_poses(self, return_dirs=True):
+        ''' generate random poses from an orbit camera
+        Args:
+            size: batch size of generated poses.
+            device: where to allocate the output.
+            radius: camera radius
+            theta_range: [min, max], should be in [0, pi]
+            phi_range: [min, max], should be in [0, 2 * pi]
+        Return:
+            poses: [size, 4, 4]
+        '''
+
+        theta_range = np.array(self.progressive_theta_range) / 180 * np.pi
+        phi_range = np.array(self.progressive_phi_range) / 180 * np.pi
+        angle_overhead = self.angle_overhead / 180 * np.pi
+        angle_front = self.angle_front / 180 * np.pi
+
+        radius = torch.rand(1) * (self.progressive_radius_range[1] - self.progressive_radius_range[0]) + self.progressive_radius_range[0]
+
+        if random.random() < self.uniform_sphere_rate:
+            unit_centers = F.normalize(
+                torch.stack([
+                    torch.randn(1),
+                    torch.abs(torch.randn(1)),
+                    torch.randn(1),
+                ], dim=-1), p=2, dim=1
+            )
+            thetas = torch.acos(unit_centers[:, 1])
+            phis = torch.atan2(unit_centers[:, 0], unit_centers[:, 2])
+            phis[phis < 0] += 2 * np.pi
+            centers = unit_centers * radius.unsqueeze(-1)
+        else:
+            thetas = torch.rand(1) * (theta_range[1] - theta_range[0]) + theta_range[0]
+            phis = torch.rand(1) * (phi_range[1] - phi_range[0]) + phi_range[0]
+            phis[phis < 0] += 2 * np.pi
+
+            centers = torch.stack([
+                radius * torch.sin(thetas) * torch.sin(phis),
+                radius * torch.cos(thetas),
+                radius * torch.sin(thetas) * torch.cos(phis),
+            ], dim=-1)  # [B, 3]
+
+        targets = 0
+
+        # jitters
+        if self.jitter_pose:
+            jit_center = self.jitter_center  # 0.015  # was 0.2
+            jit_target = self.jitter_target
+            centers += torch.rand_like(centers) * jit_center - jit_center / 2.0
+            targets += torch.randn_like(centers) * jit_target
+
+        # lookat
+        forward_vector = safe_normalize(centers - targets)
+        up_vector = torch.FloatTensor([0, 1, 0]).unsqueeze(0).repeat(1, 1)
+        right_vector = safe_normalize(torch.cross(forward_vector, up_vector, dim=-1))
+
+        if self.jitter_pose:
+            up_noise = torch.randn_like(up_vector) * self.jitter_up
+        else:
+            up_noise = 0
+
+        up_vector = safe_normalize(torch.cross(right_vector, forward_vector, dim=-1) + up_noise)
+
+        poses = torch.eye(4, dtype=torch.float).unsqueeze(0).repeat(1, 1, 1)
+        poses[:, :3, :3] = torch.stack((right_vector, up_vector, forward_vector), dim=-1)
+        poses[:, :3, 3] = centers
+
+        if return_dirs:
+            dirs = get_view_direction(thetas, phis, angle_overhead, angle_front)
+        else:
+            dirs = None
+
+        # back to degree
+        thetas = thetas / np.pi * 180
+        phis = phis / np.pi * 180
+
+        return poses, dirs, thetas, phis, radius
+
+    def progressive_update(self, progressive_ratio):
+        r = min(1.0, self.progressive_init_ratio + progressive_ratio)
+        self.progressive_phi_range = [self.default_phi * (1 - r) + self.phi_range[0] * r,
+                                      self.default_phi * (1 - r) + self.phi_range[1] * r]
+        self.progressive_theta_range = [self.default_theta * (1 - r) + self.theta_range[0] * r,
+                                        self.default_theta * (1 - r) + self.theta_range[1] * r]
+        self.progressive_radius_range = [self.default_radius * (1 - r) + self.radius_range[0] * r,
+                                         self.default_radius * (1 - r) + self.radius_range[1] * r]
+        self.progressive_fovy_range = [self.default_fovy * (1 - r) + self.fovy_range[0] * r,
+                                       self.default_fovy * (1 - r) + self.fovy_range[1] * r]
 
     def __len__(self):
         return self.size
 
     def __getitem__(self, index):
-
-        B = len(index)  # always 1
-
         # random pose on the fly
-        poses, dirs, thetas, phis, radius = rand_poses(B, radius_range=self.radius_range,
-                                                       theta_range=self.theta_range,
-                                                       phi_range=self.phi_range, return_dirs=True,
-                                                       angle_overhead=self.angle_overhead,
-                                                       angle_front=self.angle_front,
-                                                       jitter=self.jitter_pose,
-                                                       uniform_sphere_rate=self.uniform_sphere_rate)
+        poses, dirs, thetas, phis, radius = self.rand_poses()
 
         # random focal
-        fov = random.random() * (self.fovy_range[1] - self.fovy_range[0]) + self.fovy_range[0]
+        fov = random.random() * (self.progressive_fovy_range[1] - self.progressive_fovy_range[0]) + self.progressive_fovy_range[0]
 
         focal = self.H / (2 * np.tan(np.deg2rad(fov) / 2))
         intrinsics = np.array([focal, focal, self.cx, self.cy])
@@ -357,9 +358,6 @@ class NeRFValidationDataset(Dataset):
         return 1
 
     def __getitem__(self, index):
-
-        B = len(index)  # always 1
-
         # circle pose
         thetas = torch.FloatTensor([self.default_theta])
         phis = torch.FloatTensor([(index[0] / self.size) * 360])

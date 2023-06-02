@@ -7,8 +7,8 @@ import torch.nn.functional as F
 import pytorch_lightning as pl
 from torch_ema import ExponentialMovingAverage
 
-
 from utils import instantiate_from_config
+from datasets.base import NeRFTrainDataset, NeRFValidationDataset
 
 class Magic3D(pl.LightningModule):
     def __init__(self,
@@ -20,11 +20,9 @@ class Magic3D(pl.LightningModule):
                  fp16=False,  # amp optimize level
                  lr=1e-3,
                  log_interval=100,
-                 max_epoch=100,
                  guidance_scale=100,
                  extract_mesh=True,
                  progressive_view=True,
-                 progressive_view_init_ratio=0.2,
                  progressive_level=True,
                  known_view_scale=1.5,
                  known_view_noise_scale=2e-3,
@@ -37,7 +35,6 @@ class Magic3D(pl.LightningModule):
         self.extract_mesh = extract_mesh
 
         self.progressive_view = progressive_view
-        self.progressive_view_init_ratio = progressive_view_init_ratio
         self.progressive_level = progressive_level
 
         self.known_view_cale = known_view_scale
@@ -64,21 +61,18 @@ class Magic3D(pl.LightningModule):
 
     def forward(self, data):
         # progressively relaxing view range
+
+        # current progress of training ratio
+        progressive_ratio = self.global_step / (self.trainer.max_epochs * self.trainer.num_training_batches)
+
         if self.progressive_view:
-            r = min(1.0, 0.2 + self.global_step / (0.5 * self.trainer.max_epochs * self.trainer.num_training_batches))
-            self.opt.phi_range = [self.opt.default_phi * (1 - r) + self.opt.full_phi_range[0] * r,
-                                  self.opt.default_phi * (1 - r) + self.opt.full_phi_range[1] * r]
-            self.opt.theta_range = [self.opt.default_theta * (1 - r) + self.opt.full_theta_range[0] * r,
-                                    self.opt.default_theta * (1 - r) + self.opt.full_theta_range[1] * r]
-            self.opt.radius_range = [self.opt.default_radius * (1 - r) + self.opt.full_radius_range[0] * r,
-                                     self.opt.default_radius * (1 - r) + self.opt.full_radius_range[1] * r]
-            self.opt.fovy_range = [self.opt.default_fovy * (1 - r) + self.opt.full_fovy_range[0] * r,
-                                   self.opt.default_fovy * (1 - r) + self.opt.full_fovy_range[1] * r]
+            training_datasets = self.trainer.train_dataloader.dataset
+            if isinstance(training_datasets, NeRFTrainDataset):
+                training_datasets.progressive_update(progressive_ratio)
 
         # progressively increase max_level
         if self.progressive_level:
-            # total iters = total epoch * total batches
-            self.nerf.max_level = min(1.0, 0.25 + self.global_step / (0.5 * self.trainer.max_epochs * self.trainer.num_training_batches))
+            self.nerf.max_level = min(1.0, 0.25 + progressive_ratio)
 
         rays_o = data['rays_o']  # [B, N, 3]
         rays_d = data['rays_d']  # [B, N, 3]
@@ -122,15 +116,7 @@ class Magic3D(pl.LightningModule):
         if 'normal_image' in outputs:
             pred_normal = outputs['normal_image'].reshape(B, H, W, 3)
 
-        if as_latent:
-            # abuse normal & mask as latent code for faster geometry initialization (ref: fantasia3D)
-            pred_rgb = torch.cat([outputs['image'], outputs['weights_sum'].unsqueeze(-1)], dim=-1).reshape(B, H, W,
-                                                                                                           4).permute(0,
-                                                                                                                      3,
-                                                                                                                      1,
-                                                                                                                      2).contiguous()  # [1, 4, H, W]
-        else:
-            pred_rgb = outputs['image'].reshape(B, H, W, 3).permute(0, 3, 1, 2).contiguous()  # [1, 3, H, W]
+        pred_rgb = outputs['image'].reshape(B, H, W, 3).permute(0, 3, 1, 2).contiguous()  # [1, 3, H, W]
 
         # interpolate text_z
         azimuth = data['azimuth']  # [-180, 180]
@@ -183,23 +169,23 @@ class Magic3D(pl.LightningModule):
             if self.opt.lambda_orient > 0 and 'loss_orient' in outputs:
                 loss_orient = outputs['loss_orient']
                 loss = loss + self.opt.lambda_orient * loss_orient
-        else:
 
-            if self.opt.lambda_mesh_normal > 0:
-                loss = loss + self.opt.lambda_mesh_normal * outputs['normal_loss']
+        # else:
+        #
+        #     if self.opt.lambda_mesh_normal > 0:
+        #         loss = loss + self.opt.lambda_mesh_normal * outputs['normal_loss']
+        #
+        #     if self.opt.lambda_mesh_laplacian > 0:
+        #         loss = loss + self.opt.lambda_mesh_laplacian * outputs['lap_loss']
 
-            if self.opt.lambda_mesh_laplacian > 0:
-                loss = loss + self.opt.lambda_mesh_laplacian * outputs['lap_loss']
-
-        return loss
+        return loss, outputs
 
     def training_step(self, batch, batch_idx):
         with torch.cuda.amp.autocast(enabled=self.fp16):
             loss, outputs = self(batch)
 
         if self.global_step % self.log_interval == 0:
-            tb = self.logger.experiment
-
+            self.log_images(outputs)
 
         return loss
 
@@ -221,5 +207,16 @@ class Magic3D(pl.LightningModule):
     def on_train_batch_end(self, outputs, batch, batch_idx):
         if self.ema is not None:
             self.ema.update()
+
+    def log_images(self, outputs):
+        tb = self.logger.experiement
+        for key, val in outputs:
+            tb.add_image(f'side/{key}', val, self.global_step)
+
+    def configure_optimizers(self):
+        params = list(self.nerf.parameters())
+        opt = torch.optim.AdamW(params, self.lr)
+        return opt
+
 
 

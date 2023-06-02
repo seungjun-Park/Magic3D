@@ -1,1 +1,1 @@
-from diffusion import DiffusionWrapper
+from .diffusion import DiffusionWrapper
