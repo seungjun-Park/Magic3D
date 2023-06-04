@@ -8,7 +8,8 @@ import pytorch_lightning as pl
 from torch_ema import ExponentialMovingAverage
 
 from utils import instantiate_from_config
-from datasets.base import NeRFTrainDataset, NeRFValidationDataset
+from datasets.base import NeRFDataset
+
 
 class Magic3D(pl.LightningModule):
     def __init__(self,
@@ -16,9 +17,10 @@ class Magic3D(pl.LightningModule):
                  diffusion_config,
                  prompt,
                  negative=None,
-                 ema_decay=None,  # if use EMA, set the decay
+                 ema_decay=0.95,  # if use EMA, set the decay
                  fp16=False,  # amp optimize level
                  lr=1e-3,
+                 update_extra_interval=16,
                  log_interval=100,
                  guidance_scale=100,
                  extract_mesh=True,
@@ -26,8 +28,18 @@ class Magic3D(pl.LightningModule):
                  progressive_level=True,
                  known_view_scale=1.5,
                  known_view_noise_scale=2e-3,
+                 stage='first',
+                 lambda_orient=1e-2,
+                 lambda_2d_normal_smooth=0,
+                 lambda_normal=0,
+                 lambda_mesh_laplacian=0.5,
+                 lambda_mesh_normal=0.5,
+                 lambda_entropy=1e-3
                  ):
         super().__init__()
+        assert stage in ['first', 'second']
+        self.stage = stage
+
         self.ema_decay = ema_decay
         self.fp16 = fp16
         self.lr = lr
@@ -40,6 +52,7 @@ class Magic3D(pl.LightningModule):
         self.known_view_cale = known_view_scale
         self.known_view_noise_scale = known_view_noise_scale
 
+        self.update_extra_interval = update_extra_interval
         self.log_interval = log_interval
 
         self.nerf = instantiate_from_config(nerf_config)
@@ -49,26 +62,34 @@ class Magic3D(pl.LightningModule):
         self.negative = negative
         self.direction_prompt = ['front', 'side', 'back']
 
+        self.lambda_orient = lambda_orient
+        self.lambda_2d_normal_smooth = lambda_2d_normal_smooth
+        self.lambda_normal = lambda_normal
+        self.lambda_mesh_laplacian = lambda_mesh_laplacian
+        self.lambda_mesh_normal = lambda_mesh_normal
+        self.lamda_entropy = lambda_entropy
+
         # text prompt
         self.diffusion.eval()
         for p in self.diffusion.parameters():
             p.requires_grad = False
 
         if ema_decay is not None:
-            self.ema = ExponentialMovingAverage(self.model.parameters(), decay=ema_decay)
+            self.ema = ExponentialMovingAverage(self.nerf.parameters(), decay=ema_decay)
         else:
             self.ema = None
 
     def forward(self, data):
         # progressively relaxing view range
 
+        losses = dict()
+        outputs = dict()
+
         # current progress of training ratio
         progressive_ratio = self.global_step / (self.trainer.max_epochs * self.trainer.num_training_batches)
 
         if self.progressive_view:
-            training_datasets = self.trainer.train_dataloader.dataset
-            if isinstance(training_datasets, NeRFTrainDataset):
-                training_datasets.progressive_update(progressive_ratio)
+            self.trainer.train_dataloader.dataset.datasets.progressive_update(progressive_ratio)
 
         # progressively increase max_level
         if self.progressive_level:
@@ -76,19 +97,18 @@ class Magic3D(pl.LightningModule):
 
         rays_o = data['rays_o']  # [B, N, 3]
         rays_d = data['rays_d']  # [B, N, 3]
-        mvp = data['mvp']  # [B, 4, 4]
 
         B, N = rays_o.shape[:2]
         H, W = data['H'], data['W']
 
-        if self.global_step < self.opt.warmup_iters:
+        if self.stage == 'first':
             ambient_ratio = 1.0
             shading = 'normal'
             as_latent = True
             binarize = False
             bg_color = None
+
         else:
-            # random shading
             ambient_ratio = 0.1 + 0.9 * random.random()
             rand = random.random()
             if rand > 0.8:
@@ -109,14 +129,24 @@ class Magic3D(pl.LightningModule):
             else:
                 bg_color = torch.rand(3).to(self.device)  # single color random bg
 
-        outputs = self.model.render(rays_o, rays_d, mvp, H, W, staged=False, perturb=True, bg_color=bg_color,
-                                    ambient_ratio=ambient_ratio, shading=shading, binarize=binarize)
-        pred_depth = outputs['depth'].reshape(B, 1, H, W)
-        pred_mask = outputs['weights_sum'].reshape(B, 1, H, W)
+        model_results = self.nerf(rays_o, rays_d, perturb=True,
+                                   bg_color=bg_color,
+                                    ambient_ratio=ambient_ratio,
+                                   shading=shading,
+                                   binarize=binarize)
+
+        pred_depth = model_results['depth'].reshape(B, 1, H, W)
+        outputs.update({'depth': pred_depth})
+        pred_mask = model_results['weights_sum'].reshape(B, 1, H, W)
+        outputs.update({'weights_sum': pred_mask})
         if 'normal_image' in outputs:
             pred_normal = outputs['normal_image'].reshape(B, H, W, 3)
 
-        pred_rgb = outputs['image'].reshape(B, H, W, 3).permute(0, 3, 1, 2).contiguous()  # [1, 3, H, W]
+        if as_latent:
+            # abuse normal & mask as latent code for faster geometry initialization (ref: fantasia3D)
+            pred_rgb = torch.cat([outputs['image'], outputs['weights_sum'].unsqueeze(-1)], dim=-1).reshape(B, H, W,4).permute(0,3,1,2).contiguous()  # [B, 4, H, W]
+        else:
+            pred_rgb = outputs['image'].reshape(B, H, W, 3).permute(0, 3, 1, 2).contiguous()  # [B, 3, H, W]
 
         # interpolate text_z
         azimuth = data['azimuth']  # [-180, 180]
@@ -144,50 +174,52 @@ class Magic3D(pl.LightningModule):
                                                     grad_scale=self.opt.lambda_guidance)
 
         # regularizations
-        if not self.opt.dmtet:
-
-            if self.opt.lambda_opacity > 0:
+        if self.stage == 'first':
+            if self.lambda_opacity > 0:
                 loss_opacity = (outputs['weights_sum'] ** 2).mean()
                 loss = loss + self.opt.lambda_opacity * loss_opacity
 
-            if self.opt.lambda_entropy > 0:
+            if self.lambda_entropy > 0:
                 alphas = outputs['weights'].clamp(1e-5, 1 - 1e-5)
                 # alphas = alphas ** 2 # skewed entropy, favors 0 over 1
                 loss_entropy = (- alphas * torch.log2(alphas) - (1 - alphas) * torch.log2(1 - alphas)).mean()
                 lambda_entropy = self.opt.lambda_entropy * min(1, 2 * self.global_step / self.opt.iters)
                 loss = loss + lambda_entropy * loss_entropy
 
-            if self.opt.lambda_2d_normal_smooth > 0 and 'normal_image' in outputs:
+            if self.lambda_2d_normal_smooth > 0 and 'normal_image' in outputs:
                 # pred_vals = outputs['normal_image'].reshape(B, H, W, 3).permute(0, 3, 1, 2).contiguous()
                 # smoothed_vals = TF.gaussian_blur(pred_vals.detach(), kernel_size=9)
                 # loss_smooth = F.mse_loss(pred_vals, smoothed_vals)
                 # total-variation
                 loss_smooth = (pred_normal[:, 1:, :, :] - pred_normal[:, :-1, :, :]).square().mean() + \
                               (pred_normal[:, :, 1:, :] - pred_normal[:, :, :-1, :]).square().mean()
-                loss = loss + self.opt.lambda_2d_normal_smooth * loss_smooth
+                loss = loss + self.lambda_2d_normal_smooth * loss_smooth
 
-            if self.opt.lambda_orient > 0 and 'loss_orient' in outputs:
+            if self.lambda_orient > 0 and 'loss_orient' in outputs:
                 loss_orient = outputs['loss_orient']
                 loss = loss + self.opt.lambda_orient * loss_orient
 
-        # else:
-        #
-        #     if self.opt.lambda_mesh_normal > 0:
-        #         loss = loss + self.opt.lambda_mesh_normal * outputs['normal_loss']
-        #
-        #     if self.opt.lambda_mesh_laplacian > 0:
-        #         loss = loss + self.opt.lambda_mesh_laplacian * outputs['lap_loss']
+        else:
 
-        return loss, outputs
+            if self.lambda_mesh_normal > 0:
+                loss = loss + self.opt.lambda_mesh_normal * outputs['normal_loss']
+
+            if self.lambda_mesh_laplacian > 0:
+                loss = loss + self.opt.lambda_mesh_laplacian * outputs['lap_loss']
+
+        return loss, losses, outputs
 
     def training_step(self, batch, batch_idx):
         with torch.cuda.amp.autocast(enabled=self.fp16):
-            loss, outputs = self(batch)
+            if self.global_step % self.update_extra_interval == 0:
+                self.nerf.update_extra_state()
+            loss, losses, outputs = self(batch)
 
         if self.global_step % self.log_interval == 0:
             self.log_images(outputs)
 
         return loss
+
 
     def configure_gradient_clipping(
         self,

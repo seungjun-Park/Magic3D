@@ -2,13 +2,32 @@ module:
   target: models.magic3d.Magic3D
   params:
     nerf_config:
-      target: models.nerf.nerf.InstantNGP
+      target: models.nerf.InstantNGP
       params:
+        encoder_config:
+          target: gridencoder.GridEncoder
+          params:
+            input_dim: 3
+            num_levels: 16
+            level_dim: 2
+            base_resolution: 16
+            log2_hashmap_size: 19
+            desired_resolution: 2048
+            align_corners: False
+            interpolation: 'smoothstep'
+
+        encoder_bg_config:
+          target: freqencoder.FreqEncoder
+          params:
+            input_dim: 3
+            degree: 6
         bound: 1
+
     diffusion_config:
       target: models.diffusion.DiffusionWrapper
       params:
         grad_scale: 1.0
+
     prompt: "none"
 
 data:
@@ -17,14 +36,24 @@ data:
     batch_size: 1
     wrap: True
     train:
-      target: datasets.base.NeRFTrainDataset
+      target: datasets.base.NeRFDataset
       params:
         near: 0.01
+        H: 64
+        W: 64
+        train: True
+    test:
+      target: datasets.base.NeRFDataset
+      params:
+        H: 64
+        W: 64
+        train: false
+
 logger:
   target: pytorch_lightning.loggers.tensorboard.TensorBoardLogger
   params:
     save_dir: './logs'
-    name: 'holoVAE'
+    name: 'first_stage/'
 
 checkpoints:
   latest_checkpoint:

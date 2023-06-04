@@ -85,6 +85,7 @@ def instantiate_from_config(config):
             return None
         raise KeyError("Expected key `target` to instantiate.")
 
+
     module = get_obj_from_str(config["target"])(**config.get("params", dict()))
     if 'ckpt' in config:
         ckpt = torch.load(config['ckpt'])['state_dict']

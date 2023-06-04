@@ -17,7 +17,7 @@ from models.utils import custom_meshgrid, safe_normalize
 from modules import ResBlock, MLP, BasicBlock
 from encoding import get_encoder
 from activation import trunc_exp, biased_softplus
-
+from utils import instantiate_from_config
 
 def sample_pdf(bins, weights, n_samples, det=False):
     # This implementation is from NeRF
@@ -92,92 +92,6 @@ def plot_pointcloud(pc, color=None):
     # sphere
     sphere = trimesh.creation.icosphere(radius=1)
     trimesh.Scene([pc, axes, sphere]).show()
-
-
-class DMTet():
-    def __init__(self, device):
-        self.device = device
-        self.triangle_table = torch.tensor([
-            [-1, -1, -1, -1, -1, -1],
-            [1, 0, 2, -1, -1, -1],
-            [4, 0, 3, -1, -1, -1],
-            [1, 4, 2, 1, 3, 4],
-            [3, 1, 5, -1, -1, -1],
-            [2, 3, 0, 2, 5, 3],
-            [1, 4, 0, 1, 5, 4],
-            [4, 2, 5, -1, -1, -1],
-            [4, 5, 2, -1, -1, -1],
-            [4, 1, 0, 4, 5, 1],
-            [3, 2, 0, 3, 5, 2],
-            [1, 3, 5, -1, -1, -1],
-            [4, 1, 2, 4, 3, 1],
-            [3, 0, 4, -1, -1, -1],
-            [2, 0, 1, -1, -1, -1],
-            [-1, -1, -1, -1, -1, -1]
-        ], dtype=torch.long, device=device)
-        self.num_triangles_table = torch.tensor([0, 1, 1, 2, 1, 2, 2, 1, 1, 2, 2, 1, 2, 1, 1, 0], dtype=torch.long,
-                                                device=device)
-        self.base_tet_edges = torch.tensor([0, 1, 0, 2, 0, 3, 1, 2, 1, 3, 2, 3], dtype=torch.long, device=device)
-
-    def sort_edges(self, edges_ex2):
-        with torch.no_grad():
-            order = (edges_ex2[:, 0] > edges_ex2[:, 1]).long()
-            order = order.unsqueeze(dim=1)
-
-            a = torch.gather(input=edges_ex2, index=order, dim=1)
-            b = torch.gather(input=edges_ex2, index=1 - order, dim=1)
-
-        return torch.stack([a, b], -1)
-
-    def __call__(self, pos_nx3, sdf_n, tet_fx4):
-        # pos_nx3: [N, 3]
-        # sdf_n:   [N]
-        # tet_fx4: [F, 4]
-
-        with torch.no_grad():
-            occ_n = sdf_n > 0
-            occ_fx4 = occ_n[tet_fx4.reshape(-1)].reshape(-1, 4)
-            occ_sum = torch.sum(occ_fx4, -1)  # [F,]
-            valid_tets = (occ_sum > 0) & (occ_sum < 4)
-            occ_sum = occ_sum[valid_tets]
-
-            # find all vertices
-            all_edges = tet_fx4[valid_tets][:, self.base_tet_edges].reshape(-1, 2)
-            all_edges = self.sort_edges(all_edges)
-            unique_edges, idx_map = torch.unique(all_edges, dim=0, return_inverse=True)
-
-            unique_edges = unique_edges.long()
-            mask_edges = occ_n[unique_edges.reshape(-1)].reshape(-1, 2).sum(-1) == 1
-            mapping = torch.ones((unique_edges.shape[0]), dtype=torch.long, device=self.device) * -1
-            mapping[mask_edges] = torch.arange(mask_edges.sum(), dtype=torch.long, device=self.device)
-            idx_map = mapping[idx_map]  # map edges to verts
-
-            interp_v = unique_edges[mask_edges]
-
-        edges_to_interp = pos_nx3[interp_v.reshape(-1)].reshape(-1, 2, 3)
-        edges_to_interp_sdf = sdf_n[interp_v.reshape(-1)].reshape(-1, 2, 1)
-        edges_to_interp_sdf[:, -1] *= -1
-
-        denominator = edges_to_interp_sdf.sum(1, keepdim=True)
-
-        edges_to_interp_sdf = torch.flip(edges_to_interp_sdf, [1]) / denominator
-        verts = (edges_to_interp * edges_to_interp_sdf).sum(1)
-
-        idx_map = idx_map.reshape(-1, 6)
-
-        v_id = torch.pow(2, torch.arange(4, dtype=torch.long, device=self.device))
-        tetindex = (occ_fx4[valid_tets] * v_id.unsqueeze(0)).sum(-1)
-        num_triangles = self.num_triangles_table[tetindex]
-
-        # Generate triangle indices
-        faces = torch.cat((
-            torch.gather(input=idx_map[num_triangles == 1], dim=1,
-                         index=self.triangle_table[tetindex[num_triangles == 1]][:, :3]).reshape(-1, 3),
-            torch.gather(input=idx_map[num_triangles == 2], dim=1,
-                         index=self.triangle_table[tetindex[num_triangles == 2]][:, :6]).reshape(-1, 3),
-        ), dim=0)
-
-        return verts, faces
 
 
 def compute_edge_to_face_mapping(attr_idx):
@@ -262,6 +176,8 @@ def laplacian_smooth_loss(verts, faces):
 
 class InstantNGP(nn.Module):
     def __init__(self,
+                 encoder_config,
+                 encoder_bg_config=None,
                  bound=1,
                  dmtet=False,
                  min_near=0.01,
@@ -277,7 +193,7 @@ class InstantNGP(nn.Module):
                  blob_density=0,
                  blob_radius=0,
                  num_steps=64,
-                 upscale_steps=32,
+                 upsample_steps=32,
                  lambda_orient=1e-2,
                  lambda_2d_normal_smooth=0,
                  lambda_normal=0,
@@ -290,13 +206,12 @@ class InstantNGP(nn.Module):
         self.cascade = 1 + math.ceil(math.log2(bound))
         self.grid_size = 128
         self.max_level = None
-        self.dmtet = dmtet
-        self.tet_grid_size = tet_grid_size
+
         self.min_near = min_near
         self.density_thresh = density_thresh
 
         self.num_steps = num_steps
-        self.upscale_steps = upscale_steps
+        self.upsample_steps = upsample_steps
         self.lambda_orient = lambda_orient
         self.lambda_2d_normal_smooth = lambda_2d_normal_smooth
         self.lambda_normal = lambda_normal
@@ -312,33 +227,7 @@ class InstantNGP(nn.Module):
 
         self.glctx = None
 
-        if self.dmtet:
-            # load dmtet vertices
-            tets = np.load('tets/{}_tets.npz'.format(self.tet_grid_size))
-            self.verts = - torch.tensor(tets['vertices'], dtype=torch.float32, device='cuda') * 2  # covers [-1, 1]
-            self.indices = torch.tensor(tets['indices'], dtype=torch.long, device='cuda')
-            self.tet_scale = torch.tensor([1, 1, 1], dtype=torch.float32, device='cuda')
-            self.dmtet = DMTet('cuda')
-
-            # vert sdf and deform
-            sdf = torch.nn.Parameter(torch.zeros_like(self.verts[..., 0]), requires_grad=True)
-            self.register_parameter('sdf', sdf)
-            deform = torch.nn.Parameter(torch.zeros_like(self.verts), requires_grad=True)
-            self.register_parameter('deform', deform)
-
-            edges = torch.tensor([0, 1, 0, 2, 0, 3, 1, 2, 1, 3, 2, 3], dtype=torch.long,
-                                 device="cuda")  # six edges for each tetrahedron.
-            all_edges = self.indices[:, edges].reshape(-1, 2)  # [M * 6, 2]
-            all_edges_sorted = torch.sort(all_edges, dim=1)[0]
-            self.all_edges = torch.unique(all_edges_sorted, dim=0)
-
-            if self.opt.h <= 2048 and self.opt.w <= 2048:
-                self.glctx = dr.RasterizeCudaContext()
-            else:
-                self.glctx = dr.RasterizeGLContext()
-
         # nerf
-
         self.num_layers = num_layers
         self.hidden_dim = hidden_dim
         self.density_activation = density_activation
@@ -346,8 +235,8 @@ class InstantNGP(nn.Module):
         self.blob_density = blob_density
         self.blob_radius = blob_radius
 
-        self.encoder, self.in_dim = get_encoder('hashgrid', input_dim=3, log2_hashmap_size=19,
-                                                desired_resolution=2048 * self.bound, interpolation='smoothstep')
+        self.encoder = instantiate_from_config(encoder_config)
+        self.in_dim = self.encoder.output_dim
 
         self.sigma_net = MLP(self.in_dim, 4, hidden_dim, num_layers, bias=True)
         # self.normal_net = MLP(self.in_dim, 3, hidden_dim, num_layers, bias=True)
@@ -360,7 +249,8 @@ class InstantNGP(nn.Module):
             self.hidden_dim_bg = hidden_dim_bg
 
             # use a very simple network to avoid it learning the prompt...
-            self.encoder_bg, self.in_dim_bg = get_encoder('frequency', input_dim=3, multires=6)
+            self.encoder_bg = instantiate_from_config(encoder_bg_config)
+            self.in_dim_bg = self.encoder_bg.output_dim
             self.bg_net = MLP(self.in_dim_bg, 3, hidden_dim_bg, num_layers_bg, bias=True)
 
         else:
@@ -389,36 +279,160 @@ class InstantNGP(nn.Module):
 
         return sigma, albedo
 
-    def forward(self, x, d, l=None, ratio=1, shading='albedo'):
-        # x: [N, 3], in [-bound, bound]
-        # d: [N, 3], view direction, nomalized in [-1, 1]
-        # l: [3], plane light direction, nomalized in [-1, 1]
-        # ratio: scalar, ambient ratio, 1 == no shading (albedo only), 0 == only shading (textureless)
+    def forward(self, rays_o, rays_d, light_d=None, ambient_ratio=1.0, shading='albedo', bg_color=None, perturb=False, T_thresh=1e-4, binarize=False, **kwargs):
+        # rays_o, rays_d: [B, N, 3]
+        # return: image: [B, N, 3], depth: [B, N]
 
+        prefix = rays_o.shape[:-1]
+        rays_o = rays_o.contiguous().view(-1, 3)
+        rays_d = rays_d.contiguous().view(-1, 3)
 
-        sigma, albedo = self.common_forward(x)
+        N = rays_o.shape[0]  # B * N, in fact
+        device = rays_o.device
 
-        if shading == 'albedo':
-            normal = None
-            color = albedo
+        # pre-calculate near far
+        nears, fars = raymarching.near_far_from_aabb(rays_o, rays_d,
+                                                     self.aabb_train if self.training else self.aabb_infer)
 
-        else:  # lambertian shading
+        # random sample light_d if not provided
+        if light_d is None:
+            # gaussian noise around the ray origin, so the light always face the view dir (avoid dark face)
+            light_d = safe_normalize(rays_o + torch.randn(3, device=rays_o.device))  # [N, 3]
 
-            # normal = self.normal_net(enc)
-            normal = self.finite_difference_normal(x)
-            normal = safe_normalize(normal)
-            normal = torch.nan_to_num(normal)
+        results = {}
 
-            lambertian = ratio + (1 - ratio) * (normal @ l).clamp(min=0)  # [N,]
+        if self.training:
+            xyzs, dirs, ts, rays = raymarching.march_rays_train(rays_o, rays_d, self.bound, self.density_bitfield,
+                                                                self.cascade, self.grid_size, nears, fars, perturb,
+                                                                self.opt.dt_gamma, self.opt.max_steps)
+            dirs = safe_normalize(dirs)
 
-            if shading == 'textureless':
-                color = lambertian.unsqueeze(-1).repeat(1, 3)
-            elif shading == 'normal':
-                color = (normal + 1) / 2
-            else:  # 'lambertian'
-                color = albedo * lambertian.unsqueeze(-1)
+            if light_d.shape[0] > 1:
+                flatten_rays = raymarching.flatten_rays(rays, xyzs.shape[0]).long()
+                light_d = light_d[flatten_rays]
 
-        return sigma, color, normal
+            # sigmas, rgbs, normals = self(xyzs, dirs, light_d, ratio=ambient_ratio, shading=shading)
+            sigmas, albedo = self.common_forward(xyzs)
+
+            if shading == 'albedo':
+                normals = None
+                rgbs = albedo
+
+            else:  # lambertian shading
+
+                # normal = self.normal_net(enc)
+                normals = self.normals(xyzs)
+
+                lambertian = ambient_ratio + (1 - ambient_ratio) * (normals * light_d).sum(-1).clamp(min=0)  # [N,]
+
+                if shading == 'textureless':
+                    rgbs = lambertian.unsqueeze(-1).repeat(1, 3)
+                elif shading == 'normal':
+                    rgbs = (normals + 1) / 2
+                else:  # 'lambertian'
+                    rgbs = albedo * lambertian.unsqueeze(-1)
+
+            weights, weights_sum, depth, image = raymarching.composite_rays_train(sigmas, rgbs, ts, rays, T_thresh,
+                                                                                  binarize)
+
+            # normals related regularizations
+            if self.opt.lambda_orient > 0 and normals is not None:
+                # orientation loss
+                loss_orient = weights.detach() * (normals * dirs).sum(-1).clamp(min=0) ** 2
+                results['loss_orient'] = loss_orient.mean()
+
+            if self.opt.lambda_3d_normal_smooth > 0 and normals is not None:
+                normals_perturb = self.normal(xyzs + torch.randn_like(xyzs) * 1e-2)
+                results['loss_normal_perturb'] = (normals - normals_perturb).abs().mean()
+
+            if (self.opt.lambda_2d_normal_smooth > 0 or self.opt.lambda_normal > 0) and normals is not None:
+                _, _, _, normal_image = raymarching.composite_rays_train(sigmas.detach(), (normals + 1) / 2, ts, rays,
+                                                                         T_thresh, binarize)
+                results['normal_image'] = normal_image
+
+            # weights normalization
+            results['weights'] = weights
+
+        else:
+            # allocate outputs
+            dtype = torch.float32
+
+            weights_sum = torch.zeros(N, dtype=dtype, device=device)
+            depth = torch.zeros(N, dtype=dtype, device=device)
+            image = torch.zeros(N, 3, dtype=dtype, device=device)
+
+            n_alive = N
+            rays_alive = torch.arange(n_alive, dtype=torch.int32, device=device)  # [N]
+            rays_t = nears.clone()  # [N]
+
+            step = 0
+
+            while step < self.opt.max_steps:  # hard coded max step
+
+                # count alive rays
+                n_alive = rays_alive.shape[0]
+
+                # exit loop
+                if n_alive <= 0:
+                    break
+
+                # decide compact_steps
+                n_step = max(min(N // n_alive, 8), 1)
+
+                xyzs, dirs, ts = raymarching.march_rays(n_alive, n_step, rays_alive, rays_t, rays_o, rays_d, self.bound,
+                                                        self.density_bitfield, self.cascade, self.grid_size, nears,
+                                                        fars, perturb if step == 0 else False, self.opt.dt_gamma,
+                                                        self.opt.max_steps)
+                dirs = safe_normalize(dirs)
+                #sigmas, rgbs, normals = self(xyzs, dirs, light_d, ratio=ambient_ratio, shading=shading)
+                sigmas, albedo = self.common_forward(xyzs)
+
+                if shading == 'albedo':
+                    normals = None
+                    rgbs = albedo
+
+                else:  # lambertian shading
+
+                    # normal = self.normal_net(enc)
+                    normals = self.normals(xyzs)
+
+                    lambertian = ambient_ratio + (1 - ambient_ratio) * (normals * light_d).sum(-1).clamp(min=0)  # [N,]
+
+                    if shading == 'textureless':
+                        rgbs = lambertian.unsqueeze(-1).repeat(1, 3)
+                    elif shading == 'normal':
+                        rgbs = (normals + 1) / 2
+                    else:  # 'lambertian'
+                        rgbs = albedo * lambertian.unsqueeze(-1)
+
+                raymarching.composite_rays(n_alive, n_step, rays_alive, rays_t, sigmas, rgbs, ts, weights_sum, depth,
+                                           image, T_thresh, binarize)
+
+                rays_alive = rays_alive[rays_alive >= 0]
+                # print(f'step = {step}, n_step = {n_step}, n_alive = {n_alive}, xyzs: {xyzs.shape}')
+
+                step += n_step
+
+        # mix background color
+        if bg_color is None:
+            if self.opt.bg_radius > 0:
+                # use the bg model to calculate bg_color
+                bg_color = self.background(rays_d)  # [N, 3]
+            else:
+                bg_color = 1
+
+        image = image + (1 - weights_sum).unsqueeze(-1) * bg_color
+        image = image.view(*prefix, 3)
+
+        depth = depth.view(*prefix)
+
+        weights_sum = weights_sum.reshape(*prefix)
+
+        results['image'] = image
+        results['depth'] = depth
+        results['weights_sum'] = weights_sum
+
+        return results
 
     def density(self, x):
         # x: [N, 3], in [-bound, bound]
@@ -429,14 +443,6 @@ class InstantNGP(nn.Module):
             'sigma': sigma,
             'albedo': albedo,
         }
-
-    def reset_extra_state(self):
-        if not (self.cuda_ray or self.taichi_ray):
-            return
-            # density grid
-        self.density_grid.zero_()
-        self.mean_density = 0
-        self.iter_density = 0
 
     @torch.no_grad()
     def export_mesh(self, path, resolution=None, decimate_target=-1, S=128):
@@ -635,288 +641,6 @@ class InstantNGP(nn.Module):
 
         _export(v, f)
 
-    def run(self, rays_o, rays_d, light_d=None, ambient_ratio=1.0, shading='albedo', bg_color=None, perturb=False,
-            **kwargs):
-        # rays_o, rays_d: [B, N, 3], assumes B == 1
-        # bg_color: [BN, 3] in range [0, 1]
-        # return: image: [B, N, 3], depth: [B, N]
-
-        prefix = rays_o.shape[:-1]
-        rays_o = rays_o.contiguous().view(-1, 3)
-        rays_d = rays_d.contiguous().view(-1, 3)
-
-        N = rays_o.shape[0]  # N = B * N, in fact
-        device = rays_o.device
-
-        results = {}
-
-        # choose aabb
-        aabb = self.aabb_train if self.training else self.aabb_infer
-
-        # sample steps
-        # nears, fars = raymarching.near_far_from_aabb(rays_o, rays_d, aabb, self.min_near)
-        # nears.unsqueeze_(-1)
-        # fars.unsqueeze_(-1)
-        nears, fars = near_far_from_bound(rays_o, rays_d, self.bound, type='sphere', min_near=self.min_near)
-
-        # random sample light_d if not provided
-        if light_d is None:
-            # gaussian noise around the ray origin, so the light always face the view dir (avoid dark face)
-            light_d = (rays_o[0] + torch.randn(3, device=device, dtype=torch.float))
-            light_d = safe_normalize(light_d)
-
-        # print(f'nears = {nears.min().item()} ~ {nears.max().item()}, fars = {fars.min().item()} ~ {fars.max().item()}')
-
-        z_vals = torch.linspace(0.0, 1.0, self.num_steps, device=device).unsqueeze(0)  # [1, T]
-        z_vals = z_vals.expand((N, self.num_steps))  # [N, T]
-        z_vals = nears + (fars - nears) * z_vals  # [N, T], in [nears, fars]
-
-        # perturb z_vals
-        sample_dist = (fars - nears) / self.num_steps
-        if perturb:
-            z_vals = z_vals + (torch.rand(z_vals.shape, device=device) - 0.5) * sample_dist
-            # z_vals = z_vals.clamp(nears, fars) # avoid out of bounds xyzs.
-
-        # generate xyzs
-        xyzs = rays_o.unsqueeze(-2) + rays_d.unsqueeze(-2) * z_vals.unsqueeze(-1)  # [N, 1, 3] * [N, T, 1] -> [N, T, 3]
-        xyzs = torch.min(torch.max(xyzs, aabb[:3]), aabb[3:])  # a manual clip.
-
-        # plot_pointcloud(xyzs.reshape(-1, 3).detach().cpu().numpy())
-
-        # query SDF and RGB
-        density_outputs = self.density(xyzs.reshape(-1, 3))
-
-        # sigmas = density_outputs['sigma'].view(N, self.opt.num_steps) # [N, T]
-        for k, v in density_outputs.items():
-            density_outputs[k] = v.view(N, self.num_steps, -1)
-
-        # upsample z_vals (nerf-like)
-        if self.upsample_steps > 0:
-            with torch.no_grad():
-
-                deltas = z_vals[..., 1:] - z_vals[..., :-1]  # [N, T-1]
-                deltas = torch.cat([deltas, sample_dist * torch.ones_like(deltas[..., :1])], dim=-1)
-
-                alphas = 1 - torch.exp(-deltas * density_outputs['sigma'].squeeze(-1))  # [N, T]
-                alphas_shifted = torch.cat([torch.ones_like(alphas[..., :1]), 1 - alphas + 1e-15], dim=-1)  # [N, T+1]
-                weights = alphas * torch.cumprod(alphas_shifted, dim=-1)[..., :-1]  # [N, T]
-
-                # sample new z_vals
-                z_vals_mid = (z_vals[..., :-1] + 0.5 * deltas[..., :-1])  # [N, T-1]
-                new_z_vals = sample_pdf(z_vals_mid, weights[:, 1:-1], self.upsample_steps,
-                                        det=not self.training).detach()  # [N, t]
-
-                new_xyzs = rays_o.unsqueeze(-2) + rays_d.unsqueeze(-2) * new_z_vals.unsqueeze(
-                    -1)  # [N, 1, 3] * [N, t, 1] -> [N, t, 3]
-                new_xyzs = torch.min(torch.max(new_xyzs, aabb[:3]), aabb[3:])  # a manual clip.
-
-            # only forward new points to save computation
-            new_density_outputs = self.density(new_xyzs.reshape(-1, 3))
-            # new_sigmas = new_density_outputs['sigma'].view(N, self.opt.upsample_steps) # [N, t]
-            for k, v in new_density_outputs.items():
-                new_density_outputs[k] = v.view(N, self.upsample_steps, -1)
-
-            # re-order
-            z_vals = torch.cat([z_vals, new_z_vals], dim=1)  # [N, T+t]
-            z_vals, z_index = torch.sort(z_vals, dim=1)
-
-            xyzs = torch.cat([xyzs, new_xyzs], dim=1)  # [N, T+t, 3]
-            xyzs = torch.gather(xyzs, dim=1, index=z_index.unsqueeze(-1).expand_as(xyzs))
-
-            for k in density_outputs:
-                tmp_output = torch.cat([density_outputs[k], new_density_outputs[k]], dim=1)
-                density_outputs[k] = torch.gather(tmp_output, dim=1, index=z_index.unsqueeze(-1).expand_as(tmp_output))
-
-        deltas = z_vals[..., 1:] - z_vals[..., :-1]  # [N, T+t-1]
-        deltas = torch.cat([deltas, sample_dist * torch.ones_like(deltas[..., :1])], dim=-1)
-        alphas = 1 - torch.exp(-deltas * density_outputs['sigma'].squeeze(-1))  # [N, T+t]
-        alphas_shifted = torch.cat([torch.ones_like(alphas[..., :1]), 1 - alphas + 1e-15], dim=-1)  # [N, T+t+1]
-        weights = alphas * torch.cumprod(alphas_shifted, dim=-1)[..., :-1]  # [N, T+t]
-
-        dirs = rays_d.view(-1, 1, 3).expand_as(xyzs)
-        for k, v in density_outputs.items():
-            density_outputs[k] = v.view(-1, v.shape[-1])
-
-        dirs = safe_normalize(dirs)
-        sigmas, rgbs, normals = self(xyzs.reshape(-1, 3), dirs.reshape(-1, 3), light_d, ratio=ambient_ratio,
-                                     shading=shading)
-        rgbs = rgbs.view(N, -1, 3)  # [N, T+t, 3]
-        if normals is not None:
-            normals = normals.view(N, -1, 3)
-
-        # calculate weight_sum (mask)
-        weights_sum = weights.sum(dim=-1)  # [N]
-
-        # calculate depth
-        depth = torch.sum(weights * z_vals, dim=-1)
-
-        # calculate color
-        image = torch.sum(weights.unsqueeze(-1) * rgbs, dim=-2)  # [N, 3], in [0, 1]
-
-        # mix background color
-        if bg_color is None:
-            if self.bg_radius > 0:
-                # use the bg model to calculate bg_color
-                bg_color = self.background(rays_d)  # [N, 3]
-            else:
-                bg_color = 1
-
-        image = image + (1 - weights_sum).unsqueeze(-1) * bg_color
-
-        image = image.view(*prefix, 3)
-        depth = depth.view(*prefix)
-        weights_sum = weights_sum.reshape(*prefix)
-
-        if self.training:
-            if self.lambda_orient > 0 and normals is not None:
-                # orientation loss
-                loss_orient = weights.detach() * (normals * dirs).sum(-1).clamp(min=0) ** 2
-                results['loss_orient'] = loss_orient.sum(-1).mean()
-
-            if (self.lambda_2d_normal_smooth > 0 or self.lambda_normal > 0) and normals is not None:
-                normal_image = torch.sum(weights.unsqueeze(-1) * (normals + 1) / 2, dim=-2)  # [N, 3], in [0, 1]
-                results['normal_image'] = normal_image
-
-        results['image'] = image
-        results['depth'] = depth
-        results['weights'] = weights
-        results['weights_sum'] = weights_sum
-
-        return results
-
-    @torch.no_grad()
-    def init_tet(self):
-        density_thresh = self.density_thresh
-
-        if self.density_activation == 'softplus':
-            density_thresh = density_thresh * 25
-
-        # init scale
-        sigma = self.density(self.verts)['sigma']  # verts covers [-1, 1] now
-        mask = sigma > density_thresh
-        valid_verts = self.verts[mask]
-        self.tet_scale = valid_verts.abs().amax(dim=0) + 1e-1
-        self.verts = self.verts * self.tet_scale
-
-        # init sigma
-        sigma = self.density(self.verts)['sigma']  # new verts
-        self.sdf.data += (sigma - density_thresh).clamp(-1, 1)
-
-        print(f'[INFO] init dmtet: scale = {self.tet_scale}')
-
-    def run_dmtet(self, rays_d, mvp, h, w, light_d=None, ambient_ratio=1.0, shading='albedo', bg_color=None, **kwargs):
-        # mvp: [B, 4, 4]
-
-        device = mvp.device
-        campos = mvp[0, :3, 3]
-
-        # random sample light_d if not provided
-        if light_d is None:
-            # gaussian noise around the ray origin, so the light always face the view dir (avoid dark face)
-            light_d = (campos + torch.randn(3, device=device, dtype=torch.float))
-            light_d = safe_normalize(light_d)
-
-        results = {}
-
-        # get mesh
-        sdf = self.sdf
-        deform = torch.tanh(self.deform) / self.tet_grid_size
-
-        verts, faces = self.dmtet(self.verts + deform, sdf, self.indices)
-
-        # get normals
-        i0, i1, i2 = faces[:, 0], faces[:, 1], faces[:, 2]
-        v0, v1, v2 = verts[i0, :], verts[i1, :], verts[i2, :]
-
-        faces = faces.int()
-
-        face_normals = torch.cross(v1 - v0, v2 - v0)
-        face_normals = safe_normalize(face_normals)
-
-        vn = torch.zeros_like(verts)
-        vn.scatter_add_(0, i0[:, None].repeat(1, 3), face_normals)
-        vn.scatter_add_(0, i1[:, None].repeat(1, 3), face_normals)
-        vn.scatter_add_(0, i2[:, None].repeat(1, 3), face_normals)
-
-        vn = torch.where(torch.sum(vn * vn, -1, keepdim=True) > 1e-20, vn,
-                         torch.tensor([0.0, 0.0, 1.0], dtype=torch.float32, device=vn.device))
-
-        # rasterization
-        verts_clip = torch.matmul(F.pad(verts, pad=(0, 1), mode='constant', value=1.0),
-                                  torch.transpose(mvp[0], 0, 1)).float().unsqueeze(0)  # [1, N, 4]
-        rast, rast_db = dr.rasterize(self.glctx, verts_clip, faces, (h, w))
-
-        alpha, _ = dr.interpolate(torch.ones_like(verts[:, :1]).unsqueeze(0), rast, faces)  # [1, H, W, 1]
-        xyzs, _ = dr.interpolate(verts.unsqueeze(0), rast, faces)  # [1, H, W, 3]
-        normal, _ = dr.interpolate(vn.unsqueeze(0).contiguous(), rast, faces)
-        normal = safe_normalize(normal)
-
-        xyzs = xyzs.view(-1, 3)
-        mask = (alpha > 0).view(-1).detach()
-
-        # do the lighting here since we have normal from mesh now.
-        albedo = torch.zeros_like(xyzs, dtype=torch.float32)
-        if mask.any():
-            masked_albedo = self.density(xyzs[mask])['albedo']
-            albedo[mask] = masked_albedo.float()
-        albedo = albedo.view(1, h, w, 3)
-
-        if shading == 'albedo':
-            color = albedo
-        elif shading == 'textureless':
-            lambertian = ambient_ratio + (1 - ambient_ratio) * (normal @ light_d).float().clamp(min=0)
-            color = lambertian.unsqueeze(-1).repeat(1, 1, 1, 3)
-        elif shading == 'normal':
-            color = (normal + 1) / 2
-        else:  # 'lambertian'
-            lambertian = ambient_ratio + (1 - ambient_ratio) * (normal @ light_d).float().clamp(min=0)
-            color = albedo * lambertian.unsqueeze(-1)
-
-        color = dr.antialias(color, rast, verts_clip, faces).squeeze(0).clamp(0, 1)  # [H, W, 3]
-        alpha = dr.antialias(alpha, rast, verts_clip, faces).squeeze(0).clamp(0, 1)  # [H, W, 1]
-
-        # mix background color
-        if bg_color is None:
-            if self.bg_radius > 0:
-                # use the bg model to calculate bg_color
-                bg_color = self.background(rays_d)  # [N, 3]
-            else:
-                bg_color = 1
-
-        if torch.is_tensor(bg_color) and len(bg_color.shape) > 1:
-            bg_color = bg_color.view(h, w, -1)
-
-        depth = rast[0, :, :, [2]]  # [H, W]
-        color = color + (1 - alpha) * bg_color
-
-        results['depth'] = depth
-        results['image'] = color
-        results['weights_sum'] = alpha.squeeze(-1)
-
-        if self.lambda_2d_normal_smooth > 0 or self.lambda_normal > 0:
-            normal_image = dr.antialias((normal + 1) / 2, rast, verts_clip, faces).squeeze(0).clamp(0, 1)  # [H, W, 3]
-            results['normal_image'] = normal_image
-
-        # regularizations
-        if self.training:
-            if self.lambda_mesh_normal > 0:
-                results['normal_loss'] = normal_consistency(face_normals, faces)
-            if self.lambda_mesh_laplacian > 0:
-                results['lap_loss'] = laplacian_smooth_loss(verts, faces)
-
-        return results
-
-
-    def render(self, rays_o, rays_d, mvp, h, w, staged=False, max_ray_batch=4096, **kwargs):
-        # rays_o, rays_d: [B, N, 3], assumes B == 1
-        # return: pred_rgb: [B, N, 3]
-
-        if self.dmtet:
-            results = self.run_dmtet(rays_d, mvp, h, w, **kwargs)
-        else:
-            results = self.run(rays_o, rays_d, **kwargs)
-
-        return results
 
     # ref: https://github.com/zhaofuq/Instant-NSR/blob/main/nerf/network_sdf.py#L192
     def finite_difference_normal(self, x, epsilon=1e-2):
@@ -953,22 +677,55 @@ class InstantNGP(nn.Module):
 
         return rgbs
 
-    # optimizer utils
-    def get_params(self, lr):
+    @torch.no_grad()
+    def update_extra_state(self, decay=0.95, S=128):
+        # call before each epoch to update extra states.
 
-        params = [
-            {'params': self.encoder.parameters(), 'lr': lr * 10},
-            {'params': self.sigma_net.parameters(), 'lr': lr},
-            # {'params': self.normal_net.parameters(), 'lr': lr},
-        ]
+        ### update density grid
+        tmp_grid = - torch.ones_like(self.density_grid)
 
-        if self.bg_radius > 0:
-            # params.append({'params': self.encoder_bg.parameters(), 'lr': lr * 10})
-            params.append({'params': self.bg_net.parameters(), 'lr': lr})
+        X = torch.arange(self.grid_size, dtype=torch.int32, device=self.aabb_train.device).split(S)
+        Y = torch.arange(self.grid_size, dtype=torch.int32, device=self.aabb_train.device).split(S)
+        Z = torch.arange(self.grid_size, dtype=torch.int32, device=self.aabb_train.device).split(S)
 
-        if self.dmtet:
-            params.append({'params': self.sdf, 'lr': lr})
-            params.append({'params': self.deform, 'lr': lr})
+        for xs in X:
+            for ys in Y:
+                for zs in Z:
 
-        return params
+                    # construct points
+                    xx, yy, zz = custom_meshgrid(xs, ys, zs)
+                    coords = torch.cat([xx.reshape(-1, 1), yy.reshape(-1, 1), zz.reshape(-1, 1)],
+                                       dim=-1)  # [N, 3], in [0, 128)
+                    indices = raymarching.morton3D(coords).long()  # [N]
+                    xyzs = 2 * coords.float() / (self.grid_size - 1) - 1  # [N, 3] in [-1, 1]
+
+                    # cascading
+                    for cas in range(self.cascade):
+                        bound = min(2 ** cas, self.bound)
+                        half_grid_size = bound / self.grid_size
+                        # scale to current cascade's resolution
+                        cas_xyzs = xyzs * (bound - half_grid_size)
+                        # add noise in [-hgs, hgs]
+                        cas_xyzs += (torch.rand_like(cas_xyzs) * 2 - 1) * half_grid_size
+                        # query density
+                        sigmas = self.density(cas_xyzs)['sigma'].reshape(-1).detach()
+                        # assign
+                        tmp_grid[cas, indices] = sigmas
+        # ema update
+        valid_mask = self.density_grid >= 0
+        self.density_grid[valid_mask] = torch.maximum(self.density_grid[valid_mask] * decay, tmp_grid[valid_mask])
+        self.mean_density = torch.mean(self.density_grid[valid_mask]).item()
+        self.iter_density += 1
+
+        # convert to bitfield
+        density_thresh = min(self.mean_density, self.density_thresh)
+        self.density_bitfield = raymarching.packbits(self.density_grid, density_thresh, self.density_bitfield)
+
+    def reset_extra_state(self):
+        if not (self.cuda_ray or self.taichi_ray):
+            return
+        # density grid
+        self.density_grid.zero_()
+        self.mean_density = 0
+        self.iter_density = 0
 
